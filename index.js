@@ -101,6 +101,34 @@ Your group organiser has been notified.`;
   res.send(response);
 });
 
+// Create a new Ikimina group
+app.post("/api/groups", async (req, res) => {
+  const { name, contributionAmount, frequency, cycleLength, createdBy } = req.body;
+  try {
+    const result = await pool.query(
+      "INSERT INTO ikimina_groups (name, contribution_amount, frequency, cycle_length, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [name, contributionAmount, frequency, cycleLength, createdBy]
+    );
+    res.status(201).json({ status: "success", group: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+// List all groups created by an organiser
+app.get("/api/groups", async (req, res) => {
+  const { createdBy } = req.query;
+  try {
+    const result = await pool.query(
+      "SELECT * FROM ikimina_groups WHERE created_by = $1 ORDER BY created_at DESC",
+      [createdBy]
+    );
+    res.json({ status: "success", groups: result.rows });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`PesaSmart backend listening on port ${PORT}`);
 });
