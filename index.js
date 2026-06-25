@@ -129,13 +129,29 @@ Your contribution: ${m.contribution_status}`;
       response = `END Sorry, something went wrong. Please try again later.`;
     }
   
-  } else if (text === "2") {
+} else if (text === "2") {
     response = `CON Raise a dispute
 Enter the week number you are disputing:`;
   } else if (text.startsWith("2*")) {
     const week = text.split("*")[1];
-    response = `END Dispute submitted for week ${week}.
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      if (!m) {
+        response = `END You are not registered in any PesaSmart group.`;
+      } else if (!/^\d+$/.test(week)) {
+        response = `END Invalid week number. Please try again and enter digits only.`;
+      } else {
+        await pool.query(
+          "INSERT INTO contribution_disputes (group_id, member_id, disputed_week) VALUES ($1, $2, $3)",
+          [m.group_id, m.member_id, parseInt(week, 10)]
+        );
+        response = `END Dispute submitted for week ${week}.
 Your group organiser has been notified.`;
+      }
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
+  
   } else if (text === "3") {
     response = `CON Member changes
 1. Request to exit group
@@ -266,6 +282,42 @@ app.patch("/api/members/:memberId/contribution", async (req, res) => {
     );
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Member not found" });
     res.json({ status: "success", member: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+// List disputes for a group
+app.get("/api/groups/:groupId/disputes", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT d.dispute_id, d.disputed_week, d.status, d.raised_at, d.resolved_at,
+              u.full_name, u.phone_number
+       FROM contribution_disputes d
+       JOIN ikimina_members m ON m.member_id = d.member_id
+       JOIN users u ON u.user_id = m.user_id
+       WHERE d.group_id = $1
+       ORDER BY d.raised_at DESC`,
+      [req.params.groupId]
+    );
+    res.json({ status: "success", disputes: result.rows });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+// Resolve (or reopen) a dispute
+app.patch("/api/disputes/:disputeId", async (req, res) => {
+  const { disputeId } = req.params;
+  const { status } = req.body; // "resolved" or "open"
+  try {
+    const resolvedAt = status === "resolved" ? "NOW()" : "NULL";
+    const result = await pool.query(
+      `UPDATE contribution_disputes SET status = $1, resolved_at = ${resolvedAt} WHERE dispute_id = $2 RETURNING *`,
+      [status, disputeId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Dispute not found" });
+    res.json({ status: "success", dispute: result.rows[0] });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
