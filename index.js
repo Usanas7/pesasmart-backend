@@ -129,6 +129,79 @@ app.get("/api/groups", async (req, res) => {
   }
 });
 
+// Get a single group
+app.get("/api/groups/:groupId", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM ikimina_groups WHERE group_id = $1", [req.params.groupId]);
+    if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Group not found" });
+    res.json({ status: "success", group: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+// List members of a group (in rotation order)
+app.get("/api/groups/:groupId/members", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT m.member_id, m.rotation_order, m.contribution_status, m.payout_received, m.status,
+              u.full_name, u.phone_number
+       FROM ikimina_members m
+       JOIN users u ON u.user_id = m.user_id
+       WHERE m.group_id = $1
+       ORDER BY m.rotation_order`,
+      [req.params.groupId]
+    );
+    res.json({ status: "success", members: result.rows });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+// Add a member to a group
+app.post("/api/groups/:groupId/members", async (req, res) => {
+  const { groupId } = req.params;
+  const { fullName, phoneNumber } = req.body;
+  try {
+    // Find the person by phone, or create them (members don't need a PIN)
+    let userResult = await pool.query("SELECT user_id FROM users WHERE phone_number = $1", [phoneNumber]);
+    let userId;
+    if (userResult.rows.length > 0) {
+      userId = userResult.rows[0].user_id;
+    } else {
+      const insertUser = await pool.query(
+        "INSERT INTO users (full_name, phone_number) VALUES ($1, $2) RETURNING user_id",
+        [fullName, phoneNumber]
+      );
+      userId = insertUser.rows[0].user_id;
+    }
+
+    // Prevent adding the same person to this group twice
+    const existing = await pool.query(
+      "SELECT member_id FROM ikimina_members WHERE user_id = $1 AND group_id = $2",
+      [userId, groupId]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ status: "error", message: "This phone number is already a member of this group" });
+    }
+
+    // Assign the next rotation position
+    const orderResult = await pool.query(
+      "SELECT COALESCE(MAX(rotation_order), 0) + 1 AS next FROM ikimina_members WHERE group_id = $1",
+      [groupId]
+    );
+    const nextOrder = orderResult.rows[0].next;
+
+    const result = await pool.query(
+      "INSERT INTO ikimina_members (user_id, group_id, rotation_order) VALUES ($1, $2, $3) RETURNING *",
+      [userId, groupId, nextOrder]
+    );
+    res.status(201).json({ status: "success", member: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`PesaSmart backend listening on port ${PORT}`);
 });
