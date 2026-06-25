@@ -156,12 +156,46 @@ Your group organiser has been notified.`;
     response = `CON Member changes
 1. Request to exit group
 2. Update phone number`;
+  } else if (text === "3") {
+    response = `CON Member changes
+1. Request to exit group
+2. Update phone number`;
   } else if (text === "3*1") {
-    response = `END Your exit request has been sent to the group for approval.`;
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      if (!m) {
+        response = `END You are not registered in any PesaSmart group.`;
+      } else {
+        await pool.query(
+          "INSERT INTO membership_changes (group_id, affected_user, change_type) VALUES ($1, $2, 'exit')",
+          [m.group_id, m.user_id]
+        );
+        response = `END Your exit request has been sent to the group for approval.`;
+      }
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
   } else if (text === "3*2") {
     response = `CON Enter your new phone number:`;
   } else if (text.startsWith("3*2*")) {
-    response = `END Your phone number update request has been sent.`;
+    const newPhone = text.split("*")[2];
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      if (!m) {
+        response = `END You are not registered in any PesaSmart group.`;
+      } else if (!/^\d{6,15}$/.test(newPhone)) {
+        response = `END Invalid phone number. Please try again and enter digits only.`;
+      } else {
+        await pool.query(
+          "INSERT INTO membership_changes (group_id, affected_user, change_type, details) VALUES ($1, $2, 'phone_update', $3)",
+          [m.group_id, m.user_id, newPhone]
+        );
+        response = `END Your phone number update request has been sent.`;
+      }
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
+
   } else {
     response = `END Invalid choice. Please try again.`;
   }
@@ -213,8 +247,7 @@ app.get("/api/groups/:groupId", async (req, res) => {
 app.get("/api/groups/:groupId/members", async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT m.member_id, m.rotation_order, m.contribution_status, m.payout_received, m.status,
-              u.full_name, u.phone_number
+`SELECT m.member_id, m.user_id, m.rotation_order, m.contribution_status, m.payout_received,u.full_name, u.phone_number
        FROM ikimina_members m
        JOIN users u ON u.user_id = m.user_id
        WHERE m.group_id = $1
@@ -319,6 +352,60 @@ app.patch("/api/disputes/:disputeId", async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Dispute not found" });
     res.json({ status: "success", dispute: result.rows[0] });
   } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+// List membership change requests for a group
+app.get("/api/groups/:groupId/changes", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT c.change_id, c.change_type, c.status, c.details, c.created_at,
+              u.full_name, u.phone_number
+       FROM membership_changes c
+       JOIN users u ON u.user_id = c.affected_user
+       WHERE c.group_id = $1
+       ORDER BY c.created_at DESC`,
+      [req.params.groupId]
+    );
+    res.json({ status: "success", changes: result.rows });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+// Approve or reject a membership change request
+app.patch("/api/changes/:changeId", async (req, res) => {
+  const { changeId } = req.params;
+  const { decision } = req.body; // "approved" or "rejected"
+  try {
+    const cRes = await pool.query("SELECT * FROM membership_changes WHERE change_id = $1", [changeId]);
+    if (cRes.rows.length === 0) return res.status(404).json({ status: "error", message: "Request not found" });
+    const change = cRes.rows[0];
+
+    if (decision === "approved") {
+      if (change.change_type === "exit") {
+        await pool.query(
+          "UPDATE ikimina_members SET status = 'inactive' WHERE user_id = $1 AND group_id = $2",
+          [change.affected_user, change.group_id]
+        );
+      } else if (change.change_type === "phone_update" && change.details) {
+        await pool.query(
+          "UPDATE users SET phone_number = $1 WHERE user_id = $2",
+          [change.details, change.affected_user]
+        );
+      }
+    }
+
+    const result = await pool.query(
+      "UPDATE membership_changes SET status = $1 WHERE change_id = $2 RETURNING *",
+      [decision, changeId]
+    );
+    res.json({ status: "success", change: result.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ status: "error", message: "That phone number is already in use by another user" });
+    }
     res.status(500).json({ status: "error", message: err.message });
   }
 });
