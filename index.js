@@ -62,8 +62,28 @@ app.post("/api/login", async (req, res) => {
 });
 
 // USSD endpoint — the member-facing menu
-app.post("/ussd", (req, res) => {
-  const { text } = req.body; // accumulates the user's choices, separated by *
+
+// Helper: find a member (and their group) by phone number, matching on the last 9 digits
+async function findMembershipByPhone(phoneNumber) {
+  const last9 = (phoneNumber || "").replace(/\D/g, "").slice(-9);
+  const result = await pool.query(
+    `SELECT m.member_id, m.rotation_order, m.contribution_status, m.payout_received,
+            g.group_id, g.name AS group_name, g.cycle_length, g.contribution_amount,
+            u.full_name
+     FROM ikimina_members m
+     JOIN ikimina_groups g ON g.group_id = m.group_id
+     JOIN users u ON u.user_id = m.user_id
+     WHERE RIGHT(REGEXP_REPLACE(u.phone_number, '\\D', '', 'g'), 9) = $1
+     ORDER BY m.member_id
+     LIMIT 1`,
+    [last9]
+  );
+  return result.rows[0] || null;
+}
+
+// USSD member menu
+app.post("/ussd", async (req, res) => {
+  const { text, phoneNumber } = req.body;
   let response = "";
 
   if (text === "") {
@@ -72,10 +92,33 @@ app.post("/ussd", (req, res) => {
 2. Raise a dispute
 3. Member changes`;
   } else if (text === "1") {
-    response = `END Group: Kimironko Traders
-Your position: 3 of 10
-Next payout: Member 4 (this week)
-Your contribution: Paid`;
+    // LIVE: look up this member's real rotation status from the database
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      if (!m) {
+        response = `END You are not registered in any PesaSmart group. Please ask your group organiser to add your number.`;
+      } else {
+        const nextRes = await pool.query(
+          `SELECT u.full_name, mm.rotation_order
+           FROM ikimina_members mm
+           JOIN users u ON u.user_id = mm.user_id
+           WHERE mm.group_id = $1 AND mm.payout_received = FALSE
+           ORDER BY mm.rotation_order
+           LIMIT 1`,
+          [m.group_id]
+        );
+        const next = nextRes.rows[0];
+        const nextLine = next
+          ? `Next payout: ${next.full_name} (position ${next.rotation_order})`
+          : `Next payout: cycle complete`;
+        response = `END ${m.group_name}
+Your position: ${m.rotation_order} of ${m.cycle_length}
+${nextLine}
+Your contribution: ${m.contribution_status}`;
+      }
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
   } else if (text === "2") {
     response = `CON Raise a dispute
 Enter the week number you are disputing:`;
