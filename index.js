@@ -255,6 +255,22 @@ app.post("/api/groups/:groupId/members", async (req, res) => {
   }
 });
 
+// Update a member's contribution status (organiser confirms payment)
+app.patch("/api/members/:memberId/contribution", async (req, res) => {
+  const { memberId } = req.params;
+  const { status } = req.body; // "paid" or "pending"
+  try {
+    const result = await pool.query(
+      "UPDATE ikimina_members SET contribution_status = $1 WHERE member_id = $2 RETURNING *",
+      [status, memberId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Member not found" });
+    res.json({ status: "success", member: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`PesaSmart backend listening on port ${PORT}`);
 });
