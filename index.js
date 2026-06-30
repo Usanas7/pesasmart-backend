@@ -410,6 +410,53 @@ app.patch("/api/changes/:changeId", async (req, res) => {
   }
 });
 
+// Send an SMS broadcast to all active members of a group
+app.post("/api/groups/:groupId/broadcast", async (req, res) => {
+  const { groupId } = req.params;
+  const { message } = req.body;
+  if (!message || !message.trim()) {
+    return res.status(400).json({ status: "error", message: "Message cannot be empty" });
+  }
+  try {
+    // Collect active members' phone numbers
+    const members = await pool.query(
+      `SELECT u.user_id, u.phone_number
+       FROM ikimina_members m
+       JOIN users u ON u.user_id = m.user_id
+       WHERE m.group_id = $1 AND m.status = 'active'`,
+      [groupId]
+    );
+    if (members.rows.length === 0) {
+      return res.status(400).json({ status: "error", message: "This group has no active members" });
+    }
+
+    // Normalise to +250 international format for Africa's Talking
+    const recipients = members.rows.map((r) => {
+      const last9 = r.phone_number.replace(/\D/g, "").slice(-9);
+      return "+250" + last9;
+    });
+
+    // Send via Africa's Talking
+    const AfricasTalking = require("africastalking")({
+      username: process.env.AT_USERNAME,
+      apiKey: process.env.AT_API_KEY,
+    });
+    await AfricasTalking.SMS.send({ to: recipients, message });
+
+    // Log each send in the database
+    for (const m of members.rows) {
+      await pool.query(
+        "INSERT INTO sms_notifications (user_id, message, status) VALUES ($1, $2, 'sent')",
+        [m.user_id, message]
+      );
+    }
+
+    res.json({ status: "success", sentTo: recipients.length });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`PesaSmart backend listening on port ${PORT}`);
 });
