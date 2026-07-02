@@ -85,14 +85,16 @@ async function findMembershipByPhone(phoneNumber) {
 app.post("/ussd", async (req, res) => {
   const { text, phoneNumber } = req.body;
   let response = "";
-
+const parts = text === "" ? [] : text.split("*");
+  const last = parts[parts.length - 1];
+  const inGroupStatus = parts[0] === "1";
   if (text === "") {
     response = `CON Welcome to PesaSmart
 1. View rotation status
 2. Raise a dispute
 3. Member changes`;
 } else if (text === "1") {
-    // Compute current week + deadline for the header, from the group's start date
+    // Group Status menu (stays open)
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -114,7 +116,27 @@ ${info.header}
       response = `END Sorry, something went wrong. Please try again later.`;
     }
 
-  } else if (text === "1*1") {
+  } else if (inGroupStatus && last === "0") {
+    // Back to the Group Status menu
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      const g = await pool.query(
+        `SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
+        [m.group_id]
+      );
+      const info = await weekInfo(g.rows[0]);
+      response = `CON ${g.rows[0].name}
+${info.header}
+1. My status
+2. Who has paid
+3. Rotation order
+4. Open disputes`;
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
+
+  } else if (inGroupStatus && last === "1" && parts.length > 1) {
+    // My status
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -152,7 +174,8 @@ Your contribution: ${m.contribution_status}
       response = `END Sorry, something went wrong. Please try again later.`;
     }
 
-  } else if (text === "1*2") {
+  } else if (inGroupStatus && last === "2") {
+    // Who has paid
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -176,7 +199,8 @@ ${lines.join("\n")}
       response = `END Sorry, something went wrong. Please try again later.`;
     }
 
-  } else if (text === "1*3") {
+  } else if (inGroupStatus && last === "3") {
+    // Rotation order
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -199,7 +223,8 @@ ${lines.join("\n")}
       response = `END Sorry, something went wrong. Please try again later.`;
     }
 
-  } else if (text === "1*4") {
+  } else if (inGroupStatus && last === "4") {
+    // Open disputes count
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -215,27 +240,7 @@ ${lines.join("\n")}
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
-
- } else if (text === "1*1*0" || text === "1*2*0" || text === "1*3*0" || text === "1*4*0") {
-    // Back to the Group Status menu
-    try {
-      const m = await findMembershipByPhone(phoneNumber);
-      const g = await pool.query(
-        `SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
-        [m.group_id]
-      );
-      const info = await weekInfo(g.rows[0]);
-      response = `CON ${g.rows[0].name}
-${info.header}
-1. My status
-2. Who has paid
-3. Rotation order
-4. Open disputes`;
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
-    }
   }
-
  else if (text === "2") {
     response = `CON Raise a dispute
 Enter the week number you are disputing:`;
