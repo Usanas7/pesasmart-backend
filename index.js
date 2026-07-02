@@ -92,18 +92,33 @@ app.post("/ussd", async (req, res) => {
 2. Raise a dispute
 3. Member changes`;
 } else if (text === "1") {
-    response = `CON Group Status
-1. My status
-2. Who has paid
-3. Rotation order
-4. Open disputes`;
-
-  } else if (text === "1*1") {
-    // My status (what you had before)
+    // Compute current week + deadline for the header, from the group's start date
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group. Please ask your group organiser to add your number.`;
+      } else {
+        const g = await pool.query(
+          `SELECT name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
+          [m.group_id]
+        );
+        const info = weekInfo(g.rows[0]);
+        response = `CON ${g.rows[0].name} - ${info.weekLabel}
+${info.deadlineLine}
+1. My status
+2. Who has paid
+3. Rotation order
+4. Open disputes`;
+      }
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
+
+  } else if (text === "1*1") {
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      if (!m) {
+        response = `END You are not registered in any PesaSmart group.`;
       } else {
         const nextRes = await pool.query(
           `SELECT u.full_name, mm.rotation_order,
@@ -124,21 +139,20 @@ app.post("/ussd", async (req, res) => {
           nextLine = `Next payout: cycle complete`;
         } else if (next.payout_date) {
           const d = new Date(next.payout_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-          nextLine = `Next payout: ${next.full_name} on ${d}`;
+          nextLine = `Next payout: ${shortName(next.full_name)} on ${d}`;
         } else {
-          nextLine = `Next payout: ${next.full_name} (position ${next.rotation_order})`;
+          nextLine = `Next payout: ${shortName(next.full_name)}`;
         }
-        response = `END ${m.group_name}
-Your position: ${m.rotation_order} of ${m.cycle_length}
+        response = `CON Your position: ${m.rotation_order} of ${m.cycle_length}
 ${nextLine}
-Your contribution: ${m.contribution_status}`;
+Your contribution: ${m.contribution_status}
+0. Back`;
       }
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
 
   } else if (text === "1*2") {
-    // Who has paid — the group-wide contribution checklist
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -153,19 +167,16 @@ Your contribution: ${m.contribution_status}`;
           [m.group_id]
         );
         const paid = rows.rows.filter((r) => r.contribution_status === "paid").length;
-        const lines = rows.rows.map((r) => {
-          const tick = r.contribution_status === "paid" ? "+" : "-";
-          return `${tick} ${shortName(r.full_name)}`;
-        });
-        response = `END Contributions ${paid}/${rows.rows.length}
-${lines.join("\n")}`;
+        const lines = rows.rows.map((r) => `${r.contribution_status === "paid" ? "+" : "-"} ${shortName(r.full_name)}`);
+        response = `CON Contributions ${paid}/${rows.rows.length}
+${lines.join("\n")}
+0. Back`;
       }
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
 
   } else if (text === "1*3") {
-    // Rotation order — visible to everyone
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -179,19 +190,16 @@ ${lines.join("\n")}`;
            ORDER BY mm.rotation_order`,
           [m.group_id]
         );
-        const lines = rows.rows.map((r) => {
-          const mark = r.payout_received ? " (paid out)" : "";
-          return `${r.rotation_order}. ${shortName(r.full_name)}${mark}`;
-        });
-        response = `END Rotation order
-${lines.join("\n")}`;
+        const lines = rows.rows.map((r) => `${r.rotation_order}. ${shortName(r.full_name)}${r.payout_received ? " (paid out)" : ""}`);
+        response = `CON Rotation order
+${lines.join("\n")}
+0. Back`;
       }
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
 
   } else if (text === "1*4") {
-    // Open disputes — count only, no private details
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -201,14 +209,33 @@ ${lines.join("\n")}`;
           "SELECT COUNT(*) FROM contribution_disputes WHERE group_id = $1 AND status = 'open'",
           [m.group_id]
         );
-        const n = countRes.rows[0].count;
-        response = `END Open disputes in this cycle: ${n}`;
+        response = `CON Open disputes in this cycle: ${countRes.rows[0].count}
+0. Back`;
       }
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
+
+  } else if (text === "1*1*0" || text === "1*2*0" || text === "1*3*0" || text === "1*4*0") {
+    // Back to the Group Status menu
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      const g = await pool.query(
+        `SELECT name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
+        [m.group_id]
+      );
+      const info = weekInfo(g.rows[0]);
+      response = `CON ${g.rows[0].name} - ${info.weekLabel}
+${info.deadlineLine}
+1. My status
+2. Who has paid
+3. Rotation order
+4. Open disputes`;
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
   }
-  
+
  else if (text === "2") {
     response = `CON Raise a dispute
 Enter the week number you are disputing:`;
@@ -288,6 +315,30 @@ function shortName(fullName) {
   const parts = (fullName || "").trim().split(/\s+/);
   if (parts.length === 1) return parts[0];
   return `${parts[0]} ${parts[1][0]}.`;
+}
+// Work out the current week/round and next deadline from a group's start date
+function weekInfo(group) {
+  if (!group || !group.start_date) {
+    return { weekLabel: "Week -", deadlineLine: "Deadline: not set" };
+  }
+  const start = new Date(group.start_date);
+  const today = new Date();
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const daysElapsed = Math.floor((today - start) / msPerDay);
+
+  const periodDays = group.frequency === "Weekly" ? 7 : 30;
+  let currentPeriod = Math.floor(daysElapsed / periodDays) + 1; // 1-based
+  if (currentPeriod < 1) currentPeriod = 1;
+  if (currentPeriod > group.cycle_length) currentPeriod = group.cycle_length;
+
+  // Deadline = end of the current period
+  const deadline = new Date(start.getTime() + currentPeriod * periodDays * msPerDay);
+  const dStr = deadline.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+
+  return {
+    weekLabel: `Week ${currentPeriod} of ${group.cycle_length}`,
+    deadlineLine: `Deadline: ${dStr}`,
+  };
 }
 // Create a new Ikimina group
 app.post("/api/groups", async (req, res) => {
