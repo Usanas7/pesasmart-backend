@@ -91,7 +91,15 @@ app.post("/ussd", async (req, res) => {
 1. View rotation status
 2. Raise a dispute
 3. Member changes`;
-  } else if (text === "1") {
+} else if (text === "1") {
+    response = `CON Group Status
+1. My status
+2. Who has paid
+3. Rotation order
+4. Open disputes`;
+
+  } else if (text === "1*1") {
+    // My status (what you had before)
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -128,8 +136,80 @@ Your contribution: ${m.contribution_status}`;
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
+
+  } else if (text === "1*2") {
+    // Who has paid — the group-wide contribution checklist
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      if (!m) {
+        response = `END You are not registered in any PesaSmart group.`;
+      } else {
+        const rows = await pool.query(
+          `SELECT u.full_name, mm.contribution_status
+           FROM ikimina_members mm
+           JOIN users u ON u.user_id = mm.user_id
+           WHERE mm.group_id = $1 AND mm.status = 'active'
+           ORDER BY mm.rotation_order`,
+          [m.group_id]
+        );
+        const paid = rows.rows.filter((r) => r.contribution_status === "paid").length;
+        const lines = rows.rows.map((r) => {
+          const tick = r.contribution_status === "paid" ? "+" : "-";
+          return `${tick} ${shortName(r.full_name)}`;
+        });
+        response = `END Contributions ${paid}/${rows.rows.length}
+${lines.join("\n")}`;
+      }
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
+
+  } else if (text === "1*3") {
+    // Rotation order — visible to everyone
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      if (!m) {
+        response = `END You are not registered in any PesaSmart group.`;
+      } else {
+        const rows = await pool.query(
+          `SELECT u.full_name, mm.rotation_order, mm.payout_received
+           FROM ikimina_members mm
+           JOIN users u ON u.user_id = mm.user_id
+           WHERE mm.group_id = $1 AND mm.status = 'active'
+           ORDER BY mm.rotation_order`,
+          [m.group_id]
+        );
+        const lines = rows.rows.map((r) => {
+          const mark = r.payout_received ? " (paid out)" : "";
+          return `${r.rotation_order}. ${shortName(r.full_name)}${mark}`;
+        });
+        response = `END Rotation order
+${lines.join("\n")}`;
+      }
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
+
+  } else if (text === "1*4") {
+    // Open disputes — count only, no private details
+    try {
+      const m = await findMembershipByPhone(phoneNumber);
+      if (!m) {
+        response = `END You are not registered in any PesaSmart group.`;
+      } else {
+        const countRes = await pool.query(
+          "SELECT COUNT(*) FROM contribution_disputes WHERE group_id = $1 AND status = 'open'",
+          [m.group_id]
+        );
+        const n = countRes.rows[0].count;
+        response = `END Open disputes in this cycle: ${n}`;
+      }
+    } catch (err) {
+      response = `END Sorry, something went wrong. Please try again later.`;
+    }
+  }
   
-} else if (text === "2") {
+ else if (text === "2") {
     response = `CON Raise a dispute
 Enter the week number you are disputing:`;
   } else if (text.startsWith("2*")) {
