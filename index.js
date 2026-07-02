@@ -283,7 +283,12 @@ Your group organiser has been notified.`;
   res.set("Content-Type", "text/plain");
   res.send(response);
 });
-
+// Shorten a full name for USSD screens: "Niyonzima Christine" -> "Niyonzima C."
+function shortName(fullName) {
+  const parts = (fullName || "").trim().split(/\s+/);
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[1][0]}.`;
+}
 // Create a new Ikimina group
 app.post("/api/groups", async (req, res) => {
   const { name, contributionAmount, frequency, cycleLength, startDate, createdBy } = req.body;
