@@ -99,12 +99,12 @@ app.post("/ussd", async (req, res) => {
         response = `END You are not registered in any PesaSmart group. Please ask your group organiser to add your number.`;
       } else {
         const g = await pool.query(
-          `SELECT name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
+          `SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
           [m.group_id]
         );
-        const info = weekInfo(g.rows[0]);
-        response = `CON ${g.rows[0].name} - ${info.weekLabel}
-${info.deadlineLine}
+        const info = await weekInfo(g.rows[0]);
+        response = `CON ${g.rows[0].name}
+${info.header}
 1. My status
 2. Who has paid
 3. Rotation order
@@ -216,17 +216,17 @@ ${lines.join("\n")}
       response = `END Sorry, something went wrong. Please try again later.`;
     }
 
-  } else if (text === "1*1*0" || text === "1*2*0" || text === "1*3*0" || text === "1*4*0") {
+ } else if (text === "1*1*0" || text === "1*2*0" || text === "1*3*0" || text === "1*4*0") {
     // Back to the Group Status menu
     try {
       const m = await findMembershipByPhone(phoneNumber);
       const g = await pool.query(
-        `SELECT name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
+        `SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
         [m.group_id]
       );
-      const info = weekInfo(g.rows[0]);
-      response = `CON ${g.rows[0].name} - ${info.weekLabel}
-${info.deadlineLine}
+      const info = await weekInfo(g.rows[0]);
+      response = `CON ${g.rows[0].name}
+${info.header}
 1. My status
 2. Who has paid
 3. Rotation order
@@ -316,10 +316,10 @@ function shortName(fullName) {
   if (parts.length === 1) return parts[0];
   return `${parts[0]} ${parts[1][0]}.`;
 }
-// Work out the current week/round and next deadline from a group's start date
-function weekInfo(group) {
+// Work out the current round, deadline, and contributions received from a group's start date
+async function weekInfo(group) {
   if (!group || !group.start_date) {
-    return { weekLabel: "Week -", deadlineLine: "Deadline: not set" };
+    return { header: "Round -\nDeadline: not set" };
   }
   const start = new Date(group.start_date);
   const today = new Date();
@@ -327,9 +327,28 @@ function weekInfo(group) {
   const daysElapsed = Math.floor((today - start) / msPerDay);
 
   const periodDays = group.frequency === "Weekly" ? 7 : 30;
-  let currentPeriod = Math.floor(daysElapsed / periodDays) + 1; // 1-based
-  if (currentPeriod < 1) currentPeriod = 1;
-  if (currentPeriod > group.cycle_length) currentPeriod = group.cycle_length;
+  let round = Math.floor(daysElapsed / periodDays) + 1;
+  if (round < 1) round = 1;
+  if (round > group.cycle_length) round = group.cycle_length;
+
+  const deadline = new Date(start.getTime() + round * periodDays * msPerDay);
+  const dStr = deadline.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+
+  // Contributions received this cycle
+  const paidRes = await pool.query(
+    `SELECT COUNT(*) FILTER (WHERE contribution_status = 'paid') AS paid,
+            COUNT(*) AS total
+     FROM ikimina_members WHERE group_id = $1 AND status = 'active'`,
+    [group.group_id]
+  );
+  const { paid, total } = paidRes.rows[0];
+
+  return {
+    header: `Round ${round} of ${group.cycle_length}
+Contributions: ${paid}/${total}
+Deadline: ${dStr}`,
+  };
+}
 
   // Deadline = end of the current period
   const deadline = new Date(start.getTime() + currentPeriod * periodDays * msPerDay);
@@ -339,7 +358,7 @@ function weekInfo(group) {
     weekLabel: `Week ${currentPeriod} of ${group.cycle_length}`,
     deadlineLine: `Deadline: ${dStr}`,
   };
-}
+
 // Create a new Ikimina group
 app.post("/api/groups", async (req, res) => {
   const { name, contributionAmount, frequency, cycleLength, startDate, createdBy } = req.body;
