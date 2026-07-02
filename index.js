@@ -334,7 +334,6 @@ async function weekInfo(group) {
   const deadline = new Date(start.getTime() + round * periodDays * msPerDay);
   const dStr = deadline.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 
-  // Contributions received this cycle
   const paidRes = await pool.query(
     `SELECT COUNT(*) FILTER (WHERE contribution_status = 'paid') AS paid,
             COUNT(*) AS total
@@ -349,15 +348,6 @@ Contributions: ${paid}/${total}
 Deadline: ${dStr}`,
   };
 }
-
-  // Deadline = end of the current period
-  const deadline = new Date(start.getTime() + currentPeriod * periodDays * msPerDay);
-  const dStr = deadline.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-
-  return {
-    weekLabel: `Week ${currentPeriod} of ${group.cycle_length}`,
-    deadlineLine: `Deadline: ${dStr}`,
-  };
 
 // Create a new Ikimina group
 app.post("/api/groups", async (req, res) => {
