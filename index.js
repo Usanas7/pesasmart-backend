@@ -85,17 +85,19 @@ async function findMembershipByPhone(phoneNumber) {
 app.post("/ussd", async (req, res) => {
   const { text, phoneNumber } = req.body;
   let response = "";
-const parts = text === "" ? [] : text.split("*");
+
+  const parts = text === "" ? [] : text.split("*");
   const last = parts[parts.length - 1];
   const inGroupStatus = parts[0] === "1";
-if (text === "") {
-    response = mainMenu;
-  
-const mainMenu = `CON Welcome to PesaSmart
+
+  const mainMenu = `CON Welcome to PesaSmart
 1. Group Status
 2. Raise a dispute
 3. Member changes`;
-} else if (text === "1") {
+
+  if (text === "") {
+    response = mainMenu;
+  } else if (text === "1") {
     // Group Status menu (stays open)
     try {
       const m = await findMembershipByPhone(phoneNumber);
