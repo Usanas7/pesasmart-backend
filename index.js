@@ -88,9 +88,11 @@ app.post("/ussd", async (req, res) => {
 const parts = text === "" ? [] : text.split("*");
   const last = parts[parts.length - 1];
   const inGroupStatus = parts[0] === "1";
-  if (text === "") {
-    response = `CON Welcome to PesaSmart
-1. View rotation status
+if (text === "") {
+    response = mainMenu;
+  
+const mainMenu = `CON Welcome to PesaSmart
+1. Group Status
 2. Raise a dispute
 3. Member changes`;
 } else if (text === "1") {
@@ -240,12 +242,18 @@ ${lines.join("\n")}
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
-  }
- else if (text === "2") {
+  
+} else if (text === "2") {
     response = `CON Raise a dispute
-Enter the week number you are disputing:`;
+Enter the week number you are disputing:
+0. Back`;
+
+  } else if (parts[0] === "2" && last === "0") {
+    // Back to main menu from the dispute prompt
+    response = mainMenu;
+
   } else if (text.startsWith("2*")) {
-    const week = text.split("*")[1];
+    const week = parts[1];
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -257,21 +265,24 @@ Enter the week number you are disputing:`;
           "INSERT INTO contribution_disputes (group_id, member_id, disputed_week) VALUES ($1, $2, $3)",
           [m.group_id, m.member_id, parseInt(week, 10)]
         );
-        response = `END Dispute submitted for week ${week}.
-Your group organiser has been notified.`;
+        response = `CON Dispute submitted for week ${week}.
+Your group organiser has been notified.
+0. Back to menu`;
       }
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
-  
+
   } else if (text === "3") {
     response = `CON Member changes
 1. Request to exit group
-2. Update phone number`;
-  } else if (text === "3") {
-    response = `CON Member changes
-1. Request to exit group
-2. Update phone number`;
+2. Update phone number
+0. Back`;
+
+  } else if (parts[0] === "3" && parts.length === 2 && last === "0") {
+    // Back to main menu from the member-changes menu
+    response = mainMenu;
+
   } else if (text === "3*1") {
     try {
       const m = await findMembershipByPhone(phoneNumber);
@@ -282,15 +293,18 @@ Your group organiser has been notified.`;
           "INSERT INTO membership_changes (group_id, affected_user, change_type) VALUES ($1, $2, 'exit')",
           [m.group_id, m.user_id]
         );
-        response = `END Your exit request has been sent to the group for approval.`;
+        response = `CON Your exit request has been sent to the group for approval.
+0. Back to menu`;
       }
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
+
   } else if (text === "3*2") {
     response = `CON Enter your new phone number:`;
+
   } else if (text.startsWith("3*2*")) {
-    const newPhone = text.split("*")[2];
+    const newPhone = parts[2];
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -302,12 +316,12 @@ Your group organiser has been notified.`;
           "INSERT INTO membership_changes (group_id, affected_user, change_type, details) VALUES ($1, $2, 'phone_update', $3)",
           [m.group_id, m.user_id, newPhone]
         );
-        response = `END Your phone number update request has been sent.`;
+        response = `CON Your phone number update request has been sent.
+0. Back to menu`;
       }
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
-
   } else {
     response = `END Invalid choice. Please try again.`;
   }
