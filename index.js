@@ -247,34 +247,44 @@ ${lines.join("\n")}
   
 } else if (text === "2") {
     response = `CON Raise a dispute
-Enter the week number you are disputing:
-0. Back`;
+Enter the week number you are disputing:`;
 
-  } else if (parts[0] === "2" && last === "0") {
-    // Back to main menu from the dispute prompt
-    response = mainMenu;
-
-  } else if (text.startsWith("2*")) {
+  } else if (parts[0] === "2" && parts.length === 2) {
+    // They entered the week; now ask for the transaction ID
     const week = parts[1];
+    if (!/^\d+$/.test(week)) {
+      response = `END Invalid week number. Please redial and enter digits only.`;
+    } else {
+      response = `CON Week ${week} dispute
+Enter your MoMo transaction ID (from your SMS receipt):`;
+    }
+
+  } else if (parts[0] === "2" && parts.length === 3) {
+    // They entered week + transaction ID; record the dispute
+    const week = parts[1];
+    const txid = parts[2];
     try {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
       } else if (!/^\d+$/.test(week)) {
-        response = `END Invalid week number. Please try again and enter digits only.`;
+        response = `END Invalid week number. Please redial and try again.`;
+      } else if (!txid || txid.length < 3) {
+        response = `END Invalid transaction ID. Please redial and try again.`;
       } else {
-        await pool.query(
-          "INSERT INTO contribution_disputes (group_id, member_id, disputed_week) VALUES ($1, $2, $3)",
-          [m.group_id, m.member_id, parseInt(week, 10)]
+        const ins = await pool.query(
+          "INSERT INTO contribution_disputes (group_id, member_id, disputed_week, momo_txid) VALUES ($1, $2, $3, $4) RETURNING dispute_id",
+          [m.group_id, m.member_id, parseInt(week, 10), txid]
         );
-        response = `CON Dispute submitted for week ${week}.
+        const ref = String(ins.rows[0].dispute_id).padStart(4, "0");
+        response = `END Dispute REF#${ref} raised for Week ${week}.
 Your group organiser has been notified.
-0. Back to menu`;
+Note: this records your transaction ID; it is not independent verification.`;
       }
     } catch (err) {
       response = `END Sorry, something went wrong. Please try again later.`;
     }
-
+      
   } else if (text === "3") {
     response = `CON Member changes
 1. Request to exit group
@@ -490,7 +500,7 @@ app.patch("/api/members/:memberId/contribution", async (req, res) => {
 app.get("/api/groups/:groupId/disputes", async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT d.dispute_id, d.disputed_week, d.status, d.raised_at, d.resolved_at,
+      `SELECT d.dispute_id, d.disputed_week, d.momo_txid, d.status, d.raised_at, d.resolved_at,
               u.full_name, u.phone_number
        FROM contribution_disputes d
        JOIN ikimina_members m ON m.member_id = d.member_id
