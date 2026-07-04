@@ -88,60 +88,59 @@ app.post("/ussd", async (req, res) => {
 
   const parts = text === "" ? [] : text.split("*");
   const last = parts[parts.length - 1];
-  const inGroupStatus = parts[0] === "1";
+  const section = parts[0]; // "1" group status, "2" dispute, "3" member changes
 
   const mainMenu = `CON Welcome to PesaSmart
 1. Group Status
 2. Raise a dispute
 3. Member changes`;
 
-  if (text === "") {
-    response = mainMenu;
-  } else if (text === "1") {
-    // Group Status menu (stays open)
-    try {
+  // Reusable Group Status menu (with live header)
+  async function groupStatusMenu(m) {
+    const g = await pool.query(
+      `SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
+      [m.group_id]
+    );
+    const info = await weekInfo(g.rows[0]);
+    return `CON ${g.rows[0].name}
+${info.header}
+1. My status
+2. Who has paid
+3. Rotation order
+4. Open disputes
+0. Back`;
+  }
+
+  try {
+    // ===== MAIN MENU =====
+    if (text === "") {
+      response = mainMenu;
+
+    // ===== UNIVERSAL BACK (last key is 0) =====
+    // Pressing 0 always steps back, decided by section. Checked before any
+    // input parsing so it can never be read as a week number or transaction ID.
+    } else if (last === "0") {
       const m = await findMembershipByPhone(phoneNumber);
-      if (!m) {
-        response = `END You are not registered in any PesaSmart group. Please ask your group organiser to add your number.`;
+      if (section === "1" && parts.length === 2) {
+        // 1*0 -> back to main menu from the group status menu
+        response = mainMenu;
+      } else if (section === "1" && parts.length >= 3) {
+        // inside a group-status screen -> back to the group status menu
+        response = m ? await groupStatusMenu(m) : `END You are not registered in any PesaSmart group.`;
       } else {
-        const g = await pool.query(
-          `SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
-          [m.group_id]
-        );
-        const info = await weekInfo(g.rows[0]);
-        response = `CON ${g.rows[0].name}
-${info.header}
-1. My status
-2. Who has paid
-3. Rotation order
-4. Open disputes`;
+        // 2*0, 3*0, etc. -> back to main menu
+        response = mainMenu;
       }
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
-    }
 
-  } else if (inGroupStatus && last === "0") {
-    // Back to the Group Status menu
-    try {
+    // ===== 1. GROUP STATUS =====
+    } else if (text === "1") {
       const m = await findMembershipByPhone(phoneNumber);
-      const g = await pool.query(
-        `SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
-        [m.group_id]
-      );
-      const info = await weekInfo(g.rows[0]);
-      response = `CON ${g.rows[0].name}
-${info.header}
-1. My status
-2. Who has paid
-3. Rotation order
-4. Open disputes`;
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
-    }
+      response = m
+        ? await groupStatusMenu(m)
+        : `END You are not registered in any PesaSmart group. Please ask your group organiser to add your number.`;
 
-  } else if (inGroupStatus && last === "1" && parts.length > 1) {
-    // My status
-    try {
+    } else if (section === "1" && last === "1" && parts.length > 1) {
+      // My status
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -174,13 +173,9 @@ ${nextLine}
 Your contribution: ${m.contribution_status}
 0. Back`;
       }
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
-    }
 
-  } else if (inGroupStatus && last === "2") {
-    // Who has paid
-    try {
+    } else if (section === "1" && last === "2") {
+      // Who has paid
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -199,13 +194,9 @@ Your contribution: ${m.contribution_status}
 ${lines.join("\n")}
 0. Back`;
       }
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
-    }
 
-  } else if (inGroupStatus && last === "3") {
-    // Rotation order
-    try {
+    } else if (section === "1" && last === "3") {
+      // Rotation order
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -223,13 +214,9 @@ ${lines.join("\n")}
 ${lines.join("\n")}
 0. Back`;
       }
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
-    }
 
-  } else if (inGroupStatus && last === "4") {
-    // Open disputes count
-    try {
+    } else if (section === "1" && last === "4") {
+      // Open disputes count
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -241,29 +228,27 @@ ${lines.join("\n")}
         response = `CON Open disputes in this cycle: ${countRes.rows[0].count}
 0. Back`;
       }
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
-    }
-  
-} else if (text === "2") {
-    response = `CON Raise a dispute
-Enter the week number you are disputing:`;
 
-  } else if (parts[0] === "2" && parts.length === 2) {
-    // They entered the week; now ask for the transaction ID
-    const week = parts[1];
-    if (!/^\d+$/.test(week)) {
-      response = `END Invalid week number. Please redial and enter digits only.`;
-    } else {
-      response = `CON Week ${week} dispute
+    // ===== 2. RAISE A DISPUTE =====
+    } else if (text === "2") {
+      response = `CON Raise a dispute
+Enter the week number you are disputing:
+0. Back`;
+
+    } else if (section === "2" && parts.length === 2) {
+      // Entered the week; ask for transaction ID
+      const week = parts[1];
+      if (!/^\d+$/.test(week)) {
+        response = `END Invalid week number. Please redial and enter digits only.`;
+      } else {
+        response = `CON Week ${week} dispute
 Enter your MoMo transaction ID (from your SMS receipt):`;
-    }
+      }
 
-  } else if (parts[0] === "2" && parts.length === 3) {
-    // They entered week + transaction ID; record the dispute
-    const week = parts[1];
-    const txid = parts[2];
-    try {
+    } else if (section === "2" && parts.length === 3) {
+      // Entered week + transaction ID; record dispute
+      const week = parts[1];
+      const txid = parts[2];
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -281,22 +266,15 @@ Enter your MoMo transaction ID (from your SMS receipt):`;
 Your group organiser has been notified.
 Note: this records your transaction ID; it is not independent verification.`;
       }
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
-    }
-      
-  } else if (text === "3") {
-    response = `CON Member changes
+
+    // ===== 3. MEMBER CHANGES =====
+    } else if (text === "3") {
+      response = `CON Member changes
 1. Request to exit group
 2. Update phone number
 0. Back`;
 
-  } else if (parts[0] === "3" && parts.length === 2 && last === "0") {
-    // Back to main menu from the member-changes menu
-    response = mainMenu;
-
-  } else if (text === "3*1") {
-    try {
+    } else if (text === "3*1") {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -305,42 +283,40 @@ Note: this records your transaction ID; it is not independent verification.`;
           "INSERT INTO membership_changes (group_id, affected_user, change_type) VALUES ($1, $2, 'exit')",
           [m.group_id, m.user_id]
         );
-        response = `CON Your exit request has been sent to the group for approval.
-0. Back to menu`;
+        response = `END Your exit request has been sent to the group for approval.`;
       }
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
-    }
 
-  } else if (text === "3*2") {
-    response = `CON Enter your new phone number:`;
+    } else if (text === "3*2") {
+      response = `CON Enter your new phone number:`;
 
-  } else if (text.startsWith("3*2*")) {
-    const newPhone = parts[2];
-    try {
+    } else if (section === "3" && parts.length === 3 && parts[1] === "2") {
+      // Entered new phone number
+      const newPhone = parts[2];
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
       } else if (!/^\d{6,15}$/.test(newPhone)) {
-        response = `END Invalid phone number. Please try again and enter digits only.`;
+        response = `END Invalid phone number. Please redial and enter digits only.`;
       } else {
         await pool.query(
           "INSERT INTO membership_changes (group_id, affected_user, change_type, details) VALUES ($1, $2, 'phone_update', $3)",
           [m.group_id, m.user_id, newPhone]
         );
-        response = `CON Your phone number update request has been sent.
-0. Back to menu`;
+        response = `END Your phone number update request has been sent.`;
       }
-    } catch (err) {
-      response = `END Sorry, something went wrong. Please try again later.`;
+
+    // ===== FALLBACK =====
+    } else {
+      response = `END Invalid choice. Please try again.`;
     }
-  } else {
-    response = `END Invalid choice. Please try again.`;
+  } catch (err) {
+    response = `END Sorry, something went wrong. Please try again later.`;
   }
 
   res.set("Content-Type", "text/plain");
   res.send(response);
 });
+
 // Shorten a full name for USSD screens: "Niyonzima Christine" -> "Niyonzima C."
 function shortName(fullName) {
   const parts = (fullName || "").trim().split(/\s+/);
