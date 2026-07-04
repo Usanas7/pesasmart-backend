@@ -116,20 +116,13 @@ ${info.header}
     if (text === "") {
       response = mainMenu;
 
-    // ===== UNIVERSAL BACK (last key is 0) =====
-    // Pressing 0 always steps back, decided by section. Checked before any
-    // input parsing so it can never be read as a week number or transaction ID.
-    } else if (last === "0") {
+    // ===== BACK (only within Group Status) =====
+    } else if (section === "1" && last === "0") {
       const m = await findMembershipByPhone(phoneNumber);
-      if (section === "1" && parts.length === 2) {
-        // 1*0 -> back to main menu from the group status menu
+      if (parts.length === 2) {
         response = mainMenu;
-      } else if (section === "1" && parts.length >= 3) {
-        // inside a group-status screen -> back to the group status menu
-        response = m ? await groupStatusMenu(m) : `END You are not registered in any PesaSmart group.`;
       } else {
-        // 2*0, 3*0, etc. -> back to main menu
-        response = mainMenu;
+        response = m ? await groupStatusMenu(m) : `END You are not registered in any PesaSmart group.`;
       }
 
     // ===== 1. GROUP STATUS =====
@@ -232,8 +225,7 @@ ${lines.join("\n")}
     // ===== 2. RAISE A DISPUTE =====
     } else if (text === "2") {
       response = `CON Raise a dispute
-Enter the week number you are disputing:
-0. Back`;
+Enter the week number you are disputing:`;
 
     } else if (section === "2" && parts.length === 2) {
       // Entered the week; ask for transaction ID
@@ -271,8 +263,7 @@ Note: this records your transaction ID; it is not independent verification.`;
     } else if (text === "3") {
       response = `CON Member changes
 1. Request to exit group
-2. Update phone number
-0. Back`;
+2. Update phone number`;
 
     } else if (text === "3*1") {
       const m = await findMembershipByPhone(phoneNumber);
@@ -316,7 +307,6 @@ Note: this records your transaction ID; it is not independent verification.`;
   res.set("Content-Type", "text/plain");
   res.send(response);
 });
-
 // Shorten a full name for USSD screens: "Niyonzima Christine" -> "Niyonzima C."
 function shortName(fullName) {
   const parts = (fullName || "").trim().split(/\s+/);
