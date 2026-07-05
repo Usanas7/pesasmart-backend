@@ -88,21 +88,21 @@ app.post("/ussd", async (req, res) => {
 
   const parts = text === "" ? [] : text.split("*");
   const last = parts[parts.length - 1];
-  const section = parts[0]; // "1" group status, "2" dispute, "3" member changes
+  const section = parts[0];
 
-  const mainMenu = `CON Welcome to PesaSmart
+  const mainMenu = `CON PesaSmart
+Welcome
 1. Group Status
 2. Raise a dispute
 3. Member changes`;
 
-  // Reusable Group Status menu (with live header)
   async function groupStatusMenu(m) {
     const g = await pool.query(
       `SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
       [m.group_id]
     );
     const info = await weekInfo(g.rows[0]);
-    return `CON ${g.rows[0].name}
+    return `CON PesaSmart - ${g.rows[0].name}
 ${info.header}
 1. My status
 2. Who has paid
@@ -111,17 +111,13 @@ ${info.header}
   }
 
   try {
-    // ===== MAIN MENU =====
     if (text === "") {
       response = mainMenu;
 
-    // ===== BACK (only within Group Status) =====
-   // ===== BACK (from a Group Status sub-screen back to the Group Status menu) =====
     } else if (section === "1" && last === "0" && parts.length >= 3) {
       const m = await findMembershipByPhone(phoneNumber);
       response = m ? await groupStatusMenu(m) : `END You are not registered in any PesaSmart group.`;
 
-    // ===== 1. GROUP STATUS =====
     } else if (text === "1") {
       const m = await findMembershipByPhone(phoneNumber);
       response = m
@@ -129,11 +125,27 @@ ${info.header}
         : `END You are not registered in any PesaSmart group. Please ask your group organiser to add your number.`;
 
     } else if (section === "1" && last === "1" && parts.length > 1) {
-      // My status
+      // My status (richer)
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
       } else {
+        const gRes = await pool.query(
+          `SELECT contribution_amount FROM ikimina_groups WHERE group_id = $1`,
+          [m.group_id]
+        );
+        const amount = gRes.rows[0].contribution_amount;
+
+        // How many active members are ahead of me and not yet paid out (rounds until my turn)
+        const aheadRes = await pool.query(
+          `SELECT COUNT(*) FROM ikimina_members
+           WHERE group_id = $1 AND status = 'active'
+             AND payout_received = FALSE AND rotation_order < $2`,
+          [m.group_id, m.rotation_order]
+        );
+        const ahead = parseInt(aheadRes.rows[0].count, 10);
+
+        // Next unpaid recipient + payout date
         const nextRes = await pool.query(
           `SELECT u.full_name, mm.rotation_order,
                   (g.start_date + ((mm.rotation_order - 1) *
@@ -157,9 +169,26 @@ ${info.header}
         } else {
           nextLine = `Next payout: ${shortName(next.full_name)}`;
         }
-        response = `CON Your position: ${m.rotation_order} of ${m.cycle_length}
+
+        const owe = m.contribution_status === "paid"
+          ? `You owe: nothing (paid)`
+          : `You owe: ${amount} RWF`;
+        const gotPaid = m.payout_received ? `Payout received: yes` : `Payout received: not yet`;
+        let turnLine;
+        if (m.payout_received) {
+          turnLine = `Your turn: already received`;
+        } else if (ahead === 0) {
+          turnLine = `Your turn: you are next`;
+        } else {
+          turnLine = `Your turn: in ${ahead} round(s)`;
+        }
+
+        response = `CON My status
+Position: ${m.rotation_order} of ${m.cycle_length}
+${owe}
+${gotPaid}
+${turnLine}
 ${nextLine}
-Your contribution: ${m.contribution_status}
 0. Back`;
       }
 
@@ -185,7 +214,7 @@ ${lines.join("\n")}
       }
 
     } else if (section === "1" && last === "3") {
-      // Rotation order
+      // Rotation order with current-turn marker
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -198,7 +227,15 @@ ${lines.join("\n")}
            ORDER BY mm.rotation_order`,
           [m.group_id]
         );
-        const lines = rows.rows.map((r) => `${r.rotation_order}. ${shortName(r.full_name)}${r.payout_received ? " (paid out)" : ""}`);
+        // Current turn = first active member who has not received their payout
+        const currentTurn = rows.rows.find((r) => !r.payout_received);
+        const currentOrder = currentTurn ? currentTurn.rotation_order : null;
+        const lines = rows.rows.map((r) => {
+          let tag = "";
+          if (r.payout_received) tag = " (paid out)";
+          else if (r.rotation_order === currentOrder) tag = " <- current turn";
+          return `${r.rotation_order}. ${shortName(r.full_name)}${tag}`;
+        });
         response = `CON Rotation order
 ${lines.join("\n")}
 0. Back`;
@@ -220,11 +257,10 @@ ${lines.join("\n")}
 
     // ===== 2. RAISE A DISPUTE =====
     } else if (text === "2") {
-      response = `CON Raise a dispute
+      response = `CON PesaSmart - Raise a dispute
 Enter the week number you are disputing:`;
 
     } else if (section === "2" && parts.length === 2) {
-      // Entered the week; ask for transaction ID
       const week = parts[1];
       if (!/^\d+$/.test(week)) {
         response = `END Invalid week number. Please redial and enter digits only.`;
@@ -234,7 +270,6 @@ Enter your MoMo transaction ID (from your SMS receipt):`;
       }
 
     } else if (section === "2" && parts.length === 3) {
-      // Entered week + transaction ID; record dispute
       const week = parts[1];
       const txid = parts[2];
       const m = await findMembershipByPhone(phoneNumber);
@@ -257,7 +292,7 @@ Note: this records your transaction ID; it is not independent verification.`;
 
     // ===== 3. MEMBER CHANGES =====
     } else if (text === "3") {
-      response = `CON Member changes
+      response = `CON PesaSmart - Member changes
 1. Request to exit group
 2. Update phone number`;
 
@@ -277,7 +312,6 @@ Note: this records your transaction ID; it is not independent verification.`;
       response = `CON Enter your new phone number:`;
 
     } else if (section === "3" && parts.length === 3 && parts[1] === "2") {
-      // Entered new phone number
       const newPhone = parts[2];
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -292,7 +326,6 @@ Note: this records your transaction ID; it is not independent verification.`;
         response = `END Your phone number update request has been sent.`;
       }
 
-    // ===== FALLBACK =====
     } else {
       response = `END Invalid choice. Please try again.`;
     }
@@ -303,6 +336,7 @@ Note: this records your transaction ID; it is not independent verification.`;
   res.set("Content-Type", "text/plain");
   res.send(response);
 });
+
 // Shorten a full name for USSD screens: "Niyonzima Christine" -> "Niyonzima C."
 function shortName(fullName) {
   const parts = (fullName || "").trim().split(/\s+/);
