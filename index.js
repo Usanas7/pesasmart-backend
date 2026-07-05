@@ -67,7 +67,7 @@ app.post("/api/login", async (req, res) => {
 async function findMembershipByPhone(phoneNumber) {
   const last9 = (phoneNumber || "").replace(/\D/g, "").slice(-9);
   const result = await pool.query(
-    `SELECT m.member_id, m.rotation_order, m.contribution_status, m.payout_received,
+    `SELECT m.member_id, m.user_id, m.rotation_order, m.contribution_status, m.payout_received,
             g.group_id, g.name AS group_name, g.cycle_length, g.contribution_amount,
             u.full_name
      FROM ikimina_members m
@@ -501,7 +501,7 @@ app.get("/api/groups/:groupId/changes", async (req, res) => {
       `SELECT c.change_id, c.change_type, c.status, c.details, c.created_at,
               u.full_name, u.phone_number
        FROM membership_changes c
-       JOIN users u ON u.user_id = c.affected_user
+       LEFT JOIN users u ON u.user_id = c.affected_user
        WHERE c.group_id = $1
        ORDER BY c.created_at DESC`,
       [req.params.groupId]
