@@ -61,8 +61,6 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// USSD endpoint — the member-facing menu
-
 // Helper: find a member (and their group) by phone number, matching on the last 9 digits
 async function findMembershipByPhone(phoneNumber) {
   const last9 = (phoneNumber || "").replace(/\D/g, "").slice(-9);
@@ -79,6 +77,76 @@ async function findMembershipByPhone(phoneNumber) {
     [last9]
   );
   return result.rows[0] || null;
+}
+
+// Shorten a full name for USSD screens: "Niyonzima Christine" -> "Niyonzima C."
+function shortName(fullName) {
+  const parts = (fullName || "").trim().split(/\s+/);
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[1][0]}.`;
+}
+
+// Work out the current round, deadline, and contributions received from a group's start date
+async function weekInfo(group) {
+  if (!group || !group.start_date) {
+    return { header: "Round -\nDeadline: not set" };
+  }
+  const start = new Date(group.start_date);
+  const today = new Date();
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const daysElapsed = Math.floor((today - start) / msPerDay);
+
+  const periodDays = group.frequency === "Weekly" ? 7 : 30;
+  let round = Math.floor(daysElapsed / periodDays) + 1;
+  if (round < 1) round = 1;
+  if (round > group.cycle_length) round = group.cycle_length;
+
+  const deadline = new Date(start.getTime() + round * periodDays * msPerDay);
+  const dStr = deadline.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+
+  const paidRes = await pool.query(
+    `SELECT COUNT(*) FILTER (WHERE contribution_status = 'paid') AS paid,
+            COUNT(*) AS total
+     FROM ikimina_members WHERE group_id = $1 AND status = 'active'`,
+    [group.group_id]
+  );
+  const { paid, total } = paidRes.rows[0];
+
+  return {
+    header: `Round ${round} of ${group.cycle_length}
+Contributions: ${paid}/${total}
+Deadline: ${dStr}`,
+  };
+}
+
+// Send an SMS to one recipient and log it. Never throws — logs errors instead,
+// so a failed SMS can't break the USSD or approval flow.
+async function sendSms(userId, phoneNumber, message) {
+  try {
+    const last9 = (phoneNumber || "").replace(/\D/g, "").slice(-9);
+    const to = "+250" + last9;
+    const AfricasTalking = require("africastalking")({
+      username: process.env.AT_USERNAME,
+      apiKey: process.env.AT_API_KEY,
+    });
+    await AfricasTalking.SMS.send({ to: [to], message });
+    if (userId) {
+      await pool.query(
+        "INSERT INTO sms_notifications (user_id, message, status) VALUES ($1, $2, 'sent')",
+        [userId, message]
+      );
+    }
+  } catch (err) {
+    console.error("SMS failed:", err.message);
+    if (userId) {
+      try {
+        await pool.query(
+          "INSERT INTO sms_notifications (user_id, message, status) VALUES ($1, $2, 'failed')",
+          [userId, message]
+        );
+      } catch (e) { /* ignore logging failure */ }
+    }
+  }
 }
 
 // USSD member menu
@@ -125,7 +193,6 @@ ${info.header}
         : `END You are not registered in any PesaSmart group. Please ask your group organiser to add your number.`;
 
     } else if (section === "1" && last === "1" && parts.length > 1) {
-      // My status (richer)
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -135,8 +202,6 @@ ${info.header}
           [m.group_id]
         );
         const amount = gRes.rows[0].contribution_amount;
-
-        // How many active members are ahead of me and not yet paid out (rounds until my turn)
         const aheadRes = await pool.query(
           `SELECT COUNT(*) FROM ikimina_members
            WHERE group_id = $1 AND status = 'active'
@@ -144,8 +209,6 @@ ${info.header}
           [m.group_id, m.rotation_order]
         );
         const ahead = parseInt(aheadRes.rows[0].count, 10);
-
-        // Next unpaid recipient + payout date
         const nextRes = await pool.query(
           `SELECT u.full_name, mm.rotation_order,
                   (g.start_date + ((mm.rotation_order - 1) *
@@ -169,7 +232,6 @@ ${info.header}
         } else {
           nextLine = `Next payout: ${shortName(next.full_name)}`;
         }
-
         const owe = m.contribution_status === "paid"
           ? `You owe: nothing (paid)`
           : `You owe: ${amount} RWF`;
@@ -182,7 +244,6 @@ ${info.header}
         } else {
           turnLine = `Your turn: in ${ahead} round(s)`;
         }
-
         response = `CON My status
 Position: ${m.rotation_order} of ${m.cycle_length}
 ${owe}
@@ -193,7 +254,6 @@ ${nextLine}
       }
 
     } else if (section === "1" && last === "2") {
-      // Who has paid
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -214,7 +274,6 @@ ${lines.join("\n")}
       }
 
     } else if (section === "1" && last === "3") {
-      // Rotation order with current-turn marker
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -227,7 +286,6 @@ ${lines.join("\n")}
            ORDER BY mm.rotation_order`,
           [m.group_id]
         );
-        // Current turn = first active member who has not received their payout
         const currentTurn = rows.rows.find((r) => !r.payout_received);
         const currentOrder = currentTurn ? currentTurn.rotation_order : null;
         const lines = rows.rows.map((r) => {
@@ -242,7 +300,6 @@ ${lines.join("\n")}
       }
 
     } else if (section === "1" && last === "4") {
-      // Open disputes count
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END You are not registered in any PesaSmart group.`;
@@ -285,6 +342,31 @@ Enter your MoMo transaction ID (from your SMS receipt):`;
           [m.group_id, m.member_id, parseInt(week, 10), txid]
         );
         const ref = String(ins.rows[0].dispute_id).padStart(4, "0");
+
+        // SMS to the member (confirmation)
+        await sendSms(
+          m.user_id,
+          phoneNumber,
+          `PesaSmart: Dispute REF#${ref} raised for Week ${week}. Your organiser has been notified. (Transaction ID recorded, not independently verified.)`
+        );
+
+        // SMS to the organiser (notification)
+        const orgRes = await pool.query(
+          `SELECT u.user_id, u.phone_number
+           FROM ikimina_groups g
+           JOIN users u ON u.user_id = g.created_by
+           WHERE g.group_id = $1`,
+          [m.group_id]
+        );
+        if (orgRes.rows[0]) {
+          const org = orgRes.rows[0];
+          await sendSms(
+            org.user_id,
+            org.phone_number,
+            `PesaSmart: A member raised dispute REF#${ref} for Week ${week} (TxID: ${txid}). Please review in your dashboard.`
+          );
+        }
+
         response = `END Dispute REF#${ref} raised for Week ${week}.
 Your group organiser has been notified.
 Note: this records your transaction ID; it is not independent verification.`;
@@ -337,45 +419,6 @@ Note: this records your transaction ID; it is not independent verification.`;
   res.send(response);
 });
 
-// Shorten a full name for USSD screens: "Niyonzima Christine" -> "Niyonzima C."
-function shortName(fullName) {
-  const parts = (fullName || "").trim().split(/\s+/);
-  if (parts.length === 1) return parts[0];
-  return `${parts[0]} ${parts[1][0]}.`;
-}
-// Work out the current round, deadline, and contributions received from a group's start date
-async function weekInfo(group) {
-  if (!group || !group.start_date) {
-    return { header: "Round -\nDeadline: not set" };
-  }
-  const start = new Date(group.start_date);
-  const today = new Date();
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const daysElapsed = Math.floor((today - start) / msPerDay);
-
-  const periodDays = group.frequency === "Weekly" ? 7 : 30;
-  let round = Math.floor(daysElapsed / periodDays) + 1;
-  if (round < 1) round = 1;
-  if (round > group.cycle_length) round = group.cycle_length;
-
-  const deadline = new Date(start.getTime() + round * periodDays * msPerDay);
-  const dStr = deadline.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-
-  const paidRes = await pool.query(
-    `SELECT COUNT(*) FILTER (WHERE contribution_status = 'paid') AS paid,
-            COUNT(*) AS total
-     FROM ikimina_members WHERE group_id = $1 AND status = 'active'`,
-    [group.group_id]
-  );
-  const { paid, total } = paidRes.rows[0];
-
-  return {
-    header: `Round ${round} of ${group.cycle_length}
-Contributions: ${paid}/${total}
-Deadline: ${dStr}`,
-  };
-}
-
 // Create a new Ikimina group
 app.post("/api/groups", async (req, res) => {
   const { name, contributionAmount, frequency, cycleLength, startDate, createdBy } = req.body;
@@ -419,7 +462,8 @@ app.get("/api/groups/:groupId", async (req, res) => {
 app.get("/api/groups/:groupId/members", async (req, res) => {
   try {
     const result = await pool.query(
-`SELECT m.member_id, m.user_id, m.rotation_order, m.contribution_status, m.payout_received,u.full_name, u.phone_number
+      `SELECT m.member_id, m.user_id, m.rotation_order, m.contribution_status, m.payout_received, m.status,
+              u.full_name, u.phone_number
        FROM ikimina_members m
        JOIN users u ON u.user_id = m.user_id
        WHERE m.group_id = $1
@@ -437,7 +481,6 @@ app.post("/api/groups/:groupId/members", async (req, res) => {
   const { groupId } = req.params;
   const { fullName, phoneNumber } = req.body;
   try {
-    // Find the person by phone, or create them (members don't need a PIN)
     let userResult = await pool.query("SELECT user_id FROM users WHERE phone_number = $1", [phoneNumber]);
     let userId;
     if (userResult.rows.length > 0) {
@@ -450,7 +493,6 @@ app.post("/api/groups/:groupId/members", async (req, res) => {
       userId = insertUser.rows[0].user_id;
     }
 
-    // Prevent adding the same person to this group twice
     const existing = await pool.query(
       "SELECT member_id FROM ikimina_members WHERE user_id = $1 AND group_id = $2",
       [userId, groupId]
@@ -459,7 +501,6 @@ app.post("/api/groups/:groupId/members", async (req, res) => {
       return res.status(409).json({ status: "error", message: "This phone number is already a member of this group" });
     }
 
-    // Assign the next rotation position
     const orderResult = await pool.query(
       "SELECT COALESCE(MAX(rotation_order), 0) + 1 AS next FROM ikimina_members WHERE group_id = $1",
       [groupId]
@@ -479,7 +520,7 @@ app.post("/api/groups/:groupId/members", async (req, res) => {
 // Update a member's contribution status (organiser confirms payment)
 app.patch("/api/members/:memberId/contribution", async (req, res) => {
   const { memberId } = req.params;
-  const { status } = req.body; // "paid" or "pending"
+  const { status } = req.body;
   try {
     const result = await pool.query(
       "UPDATE ikimina_members SET contribution_status = $1 WHERE member_id = $2 RETURNING *",
@@ -514,7 +555,7 @@ app.get("/api/groups/:groupId/disputes", async (req, res) => {
 // Resolve (or reopen) a dispute
 app.patch("/api/disputes/:disputeId", async (req, res) => {
   const { disputeId } = req.params;
-  const { status } = req.body; // "resolved" or "open"
+  const { status } = req.body;
   try {
     const resolvedAt = status === "resolved" ? "NOW()" : "NULL";
     const result = await pool.query(
@@ -549,11 +590,17 @@ app.get("/api/groups/:groupId/changes", async (req, res) => {
 // Approve or reject a membership change request
 app.patch("/api/changes/:changeId", async (req, res) => {
   const { changeId } = req.params;
-  const { decision } = req.body; // "approved" or "rejected"
+  const { decision } = req.body;
   try {
     const cRes = await pool.query("SELECT * FROM membership_changes WHERE change_id = $1", [changeId]);
     if (cRes.rows.length === 0) return res.status(404).json({ status: "error", message: "Request not found" });
     const change = cRes.rows[0];
+
+    const memberRes = await pool.query(
+      "SELECT user_id, phone_number, full_name FROM users WHERE user_id = $1",
+      [change.affected_user]
+    );
+    const member = memberRes.rows[0];
 
     if (decision === "approved") {
       if (change.change_type === "exit") {
@@ -573,6 +620,24 @@ app.patch("/api/changes/:changeId", async (req, res) => {
       "UPDATE membership_changes SET status = $1 WHERE change_id = $2 RETURNING *",
       [decision, changeId]
     );
+
+    if (member) {
+      let msg;
+      if (change.change_type === "exit") {
+        msg = decision === "approved"
+          ? `PesaSmart: Your request to exit the group has been approved.`
+          : `PesaSmart: Your request to exit the group was not approved. Please contact your organiser.`;
+      } else {
+        msg = decision === "approved"
+          ? `PesaSmart: Your phone number update has been approved and applied.`
+          : `PesaSmart: Your phone number update request was not approved. Please contact your organiser.`;
+      }
+      const notifyPhone = (decision === "approved" && change.change_type === "phone_update")
+        ? change.details
+        : member.phone_number;
+      await sendSms(member.user_id, notifyPhone, msg);
+    }
+
     res.json({ status: "success", change: result.rows[0] });
   } catch (err) {
     if (err.code === "23505") {
@@ -590,7 +655,6 @@ app.post("/api/groups/:groupId/broadcast", async (req, res) => {
     return res.status(400).json({ status: "error", message: "Message cannot be empty" });
   }
   try {
-    // Collect active members' phone numbers
     const members = await pool.query(
       `SELECT u.user_id, u.phone_number
        FROM ikimina_members m
@@ -602,20 +666,17 @@ app.post("/api/groups/:groupId/broadcast", async (req, res) => {
       return res.status(400).json({ status: "error", message: "This group has no active members" });
     }
 
-    // Normalise to +250 international format for Africa's Talking
     const recipients = members.rows.map((r) => {
       const last9 = r.phone_number.replace(/\D/g, "").slice(-9);
       return "+250" + last9;
     });
 
-    // Send via Africa's Talking
     const AfricasTalking = require("africastalking")({
       username: process.env.AT_USERNAME,
       apiKey: process.env.AT_API_KEY,
     });
     await AfricasTalking.SMS.send({ to: recipients, message });
 
-    // Log each send in the database
     for (const m of members.rows) {
       await pool.query(
         "INSERT INTO sms_notifications (user_id, message, status) VALUES ($1, $2, 'sent')",
