@@ -107,8 +107,7 @@ ${info.header}
 1. My status
 2. Who has paid
 3. Rotation order
-4. Open disputes
-0. Back`;
+4. Open disputes`;
   }
 
   try {
@@ -117,13 +116,10 @@ ${info.header}
       response = mainMenu;
 
     // ===== BACK (only within Group Status) =====
-    } else if (section === "1" && last === "0") {
+   // ===== BACK (from a Group Status sub-screen back to the Group Status menu) =====
+    } else if (section === "1" && last === "0" && parts.length >= 3) {
       const m = await findMembershipByPhone(phoneNumber);
-      if (parts.length === 2) {
-        response = mainMenu;
-      } else {
-        response = m ? await groupStatusMenu(m) : `END You are not registered in any PesaSmart group.`;
-      }
+      response = m ? await groupStatusMenu(m) : `END You are not registered in any PesaSmart group.`;
 
     // ===== 1. GROUP STATUS =====
     } else if (text === "1") {
