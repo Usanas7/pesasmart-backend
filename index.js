@@ -61,6 +61,108 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
+// ===========================================================================
+// USSD TRANSLATIONS
+// en = English (final). rw = Kinyarwanda (PLACEHOLDERS - please correct each).
+// Every rw line below is my best-effort guess. Fix them to natural Kinyarwanda.
+// {placeholders} in braces are filled in by the code - keep them as-is.
+// ===========================================================================
+const T = {
+  en: {
+    groupStatus: "Group Status",
+    raiseDispute: "Raise a dispute",
+    memberChanges: "Member changes",
+    myStatus: "My status",
+    whoPaid: "Who has paid",
+    rotationOrder: "Rotation order",
+    openDisputes: "Open disputes",
+    back: "0. Back",
+    notRegistered: "You are not registered in any PesaSmart group. Please ask your group organiser to add your number.",
+    notRegisteredShort: "You are not registered in any PesaSmart group.",
+    somethingWrong: "Sorry, something went wrong. Please try again later.",
+    invalidChoice: "Invalid choice. Please try again.",
+    position: "Position",
+    of: "of",
+    oweNothing: "You owe: nothing (paid)",
+    oweAmount: "You owe: {amount} RWF",
+    payoutReceivedYes: "Payout received: yes",
+    payoutReceivedNo: "Payout received: not yet",
+    turnAlready: "Your turn: already received",
+    turnNext: "Your turn: you are next",
+    turnRounds: "Your turn: in {n} round(s)",
+    nextPayoutName: "Next payout: {name} on {date}",
+    nextPayoutNameNoDate: "Next payout: {name}",
+    nextPayoutComplete: "Next payout: cycle complete",
+    contributions: "Contributions {paid}/{total}",
+    paidOut: "(paid out)",
+    currentTurn: "<- current turn",
+    openDisputesCount: "Open disputes in this cycle: {n}",
+    enterWeek: "Enter the week number you are disputing:",
+    enterTxid: "Enter your MoMo transaction ID (from your SMS receipt):",
+    weekDispute: "Week {week} dispute",
+    invalidWeek: "Invalid week number. Please redial and enter digits only.",
+    invalidWeekRetry: "Invalid week number. Please redial and try again.",
+    invalidTxid: "Invalid transaction ID. Please redial and try again.",
+    disputeRaised: "Dispute REF#{ref} raised for Week {week}.\nYour group organiser has been notified.\nNote: this records your transaction ID; it is not independent verification.",
+    requestExit: "Request to exit group",
+    updatePhone: "Update phone number",
+    enterNewPhone: "Enter your new phone number:",
+    exitSent: "Your exit request has been sent to the group for approval.",
+    invalidPhone: "Invalid phone number. Please redial and enter digits only.",
+    phoneSent: "Your phone number update request has been sent.",
+  },
+  rw: {
+    // TODO: correct all of these to natural Kinyarwanda
+    groupStatus: "Imiterere y'itsinda",
+    raiseDispute: "Gutanga ikibazo",
+    memberChanges: "Guhindura umunyamuryango",
+    myStatus: "Uko mpagaze",
+    whoPaid: "Abishyuye",
+    rotationOrder: "Uko bikurikirana",
+    openDisputes: "Ibibazo bidakemutse",
+    back: "0. Gusubira inyuma",
+    notRegistered: "Ntabwo wanditse muri itsinda rya PesaSmart. Saba umuyobozi w'itsinda kongeramo numero yawe.",
+    notRegisteredShort: "Ntabwo wanditse muri itsinda rya PesaSmart.",
+    somethingWrong: "Mubabarire, hari ikitagenze neza. Ongera ugerageze.",
+    invalidChoice: "Amahitamo atariyo. Ongera ugerageze.",
+    position: "Umwanya",
+    of: "kuri",
+    oweNothing: "Ufite umwenda: nta na kimwe (wishyuye)",
+    oweAmount: "Ufite umwenda: {amount} RWF",
+    payoutReceivedYes: "Wahawe amafaranga: yego",
+    payoutReceivedNo: "Wahawe amafaranga: ntibiraba",
+    turnAlready: "Igihe cyawe: wamaze guhabwa",
+    turnNext: "Igihe cyawe: uri ukurikira",
+    turnRounds: "Igihe cyawe: mu byiciro {n}",
+    nextPayoutName: "Uwakurikira guhabwa: {name} ku wa {date}",
+    nextPayoutNameNoDate: "Uwakurikira guhabwa: {name}",
+    nextPayoutComplete: "Uwakurikira guhabwa: uruziga rwarangiye",
+    contributions: "Imisanzu {paid}/{total}",
+    paidOut: "(yahawe)",
+    currentTurn: "<- igihe cye",
+    openDisputesCount: "Ibibazo bidakemutse muri iki cyiciro: {n}",
+    enterWeek: "Andika icyumweru urimo kuregera:",
+    enterTxid: "Andika nomero y'ubwishyu bwa MoMo (iri kuri SMS yawe):",
+    weekDispute: "Ikibazo cy'icyumweru {week}",
+    invalidWeek: "Nomero y'icyumweru itariyo. Ongera uhamagare wandike imibare gusa.",
+    invalidWeekRetry: "Nomero y'icyumweru itariyo. Ongera uhamagare.",
+    invalidTxid: "Nomero y'ubwishyu itariyo. Ongera uhamagare.",
+    disputeRaised: "Ikibazo REF#{ref} cyatanzwe ku cyumweru {week}.\nUmuyobozi w'itsinda yamenyeshejwe.\nIcyitonderwa: iyi nomero yanditswe ariko ntabwo yagenzuwe.",
+    requestExit: "Gusaba kuva mu itsinda",
+    updatePhone: "Guhindura numero ya telefone",
+    enterNewPhone: "Andika numero nshya ya telefone:",
+    exitSent: "Icyifuzo cyawe cyo kuva mu itsinda cyoherejwe kugira ngo cyemezwe.",
+    invalidPhone: "Numero ya telefone itariyo. Ongera uhamagare wandike imibare gusa.",
+    phoneSent: "Icyifuzo cyo guhindura numero cyoherejwe.",
+  },
+};
+
+function fill(str, vars) {
+  let out = str;
+  for (const k in vars) out = out.split(`{${k}}`).join(vars[k]);
+  return out;
+}
+
 // Helper: find a member (and their group) by phone number, matching on the last 9 digits
 async function findMembershipByPhone(phoneNumber) {
   const last9 = (phoneNumber || "").replace(/\D/g, "").slice(-9);
@@ -79,14 +181,12 @@ async function findMembershipByPhone(phoneNumber) {
   return result.rows[0] || null;
 }
 
-// Shorten a full name for USSD screens: "Niyonzima Christine" -> "Niyonzima C."
 function shortName(fullName) {
   const parts = (fullName || "").trim().split(/\s+/);
   if (parts.length === 1) return parts[0];
   return `${parts[0]} ${parts[1][0]}.`;
 }
 
-// Work out the current round, deadline, and contributions received from a group's start date
 async function weekInfo(group) {
   if (!group || !group.start_date) {
     return { header: "Round -\nDeadline: not set" };
@@ -119,8 +219,6 @@ Deadline: ${dStr}`,
   };
 }
 
-// Send an SMS to one recipient and log it. Never throws — logs errors instead,
-// so a failed SMS can't break the USSD or approval flow.
 async function sendSms(userId, phoneNumber, message) {
   try {
     const last9 = (phoneNumber || "").replace(/\D/g, "").slice(-9);
@@ -149,20 +247,39 @@ async function sendSms(userId, phoneNumber, message) {
   }
 }
 
-// USSD member menu
+// USSD member menu (bilingual: 1 = English, 2 = Kinyarwanda)
 app.post("/ussd", async (req, res) => {
   const { text, phoneNumber } = req.body;
   let response = "";
 
-  const parts = text === "" ? [] : text.split("*");
-  const last = parts[parts.length - 1];
-  const section = parts[0];
+  const rawParts = text === "" ? [] : text.split("*");
 
-  const mainMenu = `CON PesaSmart
-Welcome
-1. Group Status
-2. Raise a dispute
-3. Member changes`;
+  // First screen: choose language
+  if (text === "") {
+    res.set("Content-Type", "text/plain");
+    return res.send(`CON PesaSmart
+Welcome / Murakaza neza
+1. English
+2. Kinyarwanda`);
+  }
+
+  // First digit is the language. Peel it off so the rest works normally.
+  const langDigit = rawParts[0];
+  const lang = langDigit === "2" ? "rw" : "en";
+  const t = T[lang];
+
+  // The "menu path" after the language choice
+  const parts = rawParts.slice(1); // e.g. ["1","2"] means Group Status > Who paid
+  const menu = parts.length === 0 ? "" : parts.join("*");
+  const section = parts[0];
+  const last = parts[parts.length - 1];
+
+  function mainMenu() {
+    return `CON PesaSmart
+1. ${t.groupStatus}
+2. ${t.raiseDispute}
+3. ${t.memberChanges}`;
+  }
 
   async function groupStatusMenu(m) {
     const g = await pool.query(
@@ -172,30 +289,32 @@ Welcome
     const info = await weekInfo(g.rows[0]);
     return `CON PesaSmart - ${g.rows[0].name}
 ${info.header}
-1. My status
-2. Who has paid
-3. Rotation order
-4. Open disputes`;
+1. ${t.myStatus}
+2. ${t.whoPaid}
+3. ${t.rotationOrder}
+4. ${t.openDisputes}`;
   }
 
   try {
-    if (text === "") {
-      response = mainMenu;
+    // Just chose language -> show main menu
+    if (menu === "") {
+      response = mainMenu();
 
+    // Back within Group Status
     } else if (section === "1" && last === "0" && parts.length >= 3) {
       const m = await findMembershipByPhone(phoneNumber);
-      response = m ? await groupStatusMenu(m) : `END You are not registered in any PesaSmart group.`;
+      response = m ? await groupStatusMenu(m) : `END ${t.notRegisteredShort}`;
 
-    } else if (text === "1") {
+    // Group Status menu
+    } else if (menu === "1") {
       const m = await findMembershipByPhone(phoneNumber);
-      response = m
-        ? await groupStatusMenu(m)
-        : `END You are not registered in any PesaSmart group. Please ask your group organiser to add your number.`;
+      response = m ? await groupStatusMenu(m) : `END ${t.notRegistered}`;
 
+    // My status
     } else if (section === "1" && last === "1" && parts.length > 1) {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
-        response = `END You are not registered in any PesaSmart group.`;
+        response = `END ${t.notRegisteredShort}`;
       } else {
         const gRes = await pool.query(
           `SELECT contribution_amount FROM ikimina_groups WHERE group_id = $1`,
@@ -225,38 +344,34 @@ ${info.header}
         const next = nextRes.rows[0];
         let nextLine;
         if (!next) {
-          nextLine = `Next payout: cycle complete`;
+          nextLine = t.nextPayoutComplete;
         } else if (next.payout_date) {
           const d = new Date(next.payout_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-          nextLine = `Next payout: ${shortName(next.full_name)} on ${d}`;
+          nextLine = fill(t.nextPayoutName, { name: shortName(next.full_name), date: d });
         } else {
-          nextLine = `Next payout: ${shortName(next.full_name)}`;
+          nextLine = fill(t.nextPayoutNameNoDate, { name: shortName(next.full_name) });
         }
-        const owe = m.contribution_status === "paid"
-          ? `You owe: nothing (paid)`
-          : `You owe: ${amount} RWF`;
-        const gotPaid = m.payout_received ? `Payout received: yes` : `Payout received: not yet`;
+        const owe = m.contribution_status === "paid" ? t.oweNothing : fill(t.oweAmount, { amount });
+        const gotPaid = m.payout_received ? t.payoutReceivedYes : t.payoutReceivedNo;
         let turnLine;
-        if (m.payout_received) {
-          turnLine = `Your turn: already received`;
-        } else if (ahead === 0) {
-          turnLine = `Your turn: you are next`;
-        } else {
-          turnLine = `Your turn: in ${ahead} round(s)`;
-        }
-        response = `CON My status
-Position: ${m.rotation_order} of ${m.cycle_length}
+        if (m.payout_received) turnLine = t.turnAlready;
+        else if (ahead === 0) turnLine = t.turnNext;
+        else turnLine = fill(t.turnRounds, { n: ahead });
+
+        response = `CON ${t.myStatus}
+${t.position} ${m.rotation_order} ${t.of} ${m.cycle_length}
 ${owe}
 ${gotPaid}
 ${turnLine}
 ${nextLine}
-0. Back`;
+${t.back}`;
       }
 
+    // Who has paid
     } else if (section === "1" && last === "2") {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
-        response = `END You are not registered in any PesaSmart group.`;
+        response = `END ${t.notRegisteredShort}`;
       } else {
         const rows = await pool.query(
           `SELECT u.full_name, mm.contribution_status
@@ -268,15 +383,16 @@ ${nextLine}
         );
         const paid = rows.rows.filter((r) => r.contribution_status === "paid").length;
         const lines = rows.rows.map((r) => `${r.contribution_status === "paid" ? "+" : "-"} ${shortName(r.full_name)}`);
-        response = `CON Contributions ${paid}/${rows.rows.length}
+        response = `CON ${fill(t.contributions, { paid, total: rows.rows.length })}
 ${lines.join("\n")}
-0. Back`;
+${t.back}`;
       }
 
+    // Rotation order
     } else if (section === "1" && last === "3") {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
-        response = `END You are not registered in any PesaSmart group.`;
+        response = `END ${t.notRegisteredShort}`;
       } else {
         const rows = await pool.query(
           `SELECT u.full_name, mm.rotation_order, mm.payout_received
@@ -290,40 +406,41 @@ ${lines.join("\n")}
         const currentOrder = currentTurn ? currentTurn.rotation_order : null;
         const lines = rows.rows.map((r) => {
           let tag = "";
-          if (r.payout_received) tag = " (paid out)";
-          else if (r.rotation_order === currentOrder) tag = " <- current turn";
+          if (r.payout_received) tag = ` ${t.paidOut}`;
+          else if (r.rotation_order === currentOrder) tag = ` ${t.currentTurn}`;
           return `${r.rotation_order}. ${shortName(r.full_name)}${tag}`;
         });
-        response = `CON Rotation order
+        response = `CON ${t.rotationOrder}
 ${lines.join("\n")}
-0. Back`;
+${t.back}`;
       }
 
+    // Open disputes count
     } else if (section === "1" && last === "4") {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
-        response = `END You are not registered in any PesaSmart group.`;
+        response = `END ${t.notRegisteredShort}`;
       } else {
         const countRes = await pool.query(
           "SELECT COUNT(*) FROM contribution_disputes WHERE group_id = $1 AND status = 'open'",
           [m.group_id]
         );
-        response = `CON Open disputes in this cycle: ${countRes.rows[0].count}
-0. Back`;
+        response = `CON ${fill(t.openDisputesCount, { n: countRes.rows[0].count })}
+${t.back}`;
       }
 
     // ===== 2. RAISE A DISPUTE =====
-    } else if (text === "2") {
-      response = `CON PesaSmart - Raise a dispute
-Enter the week number you are disputing:`;
+    } else if (menu === "2") {
+      response = `CON PesaSmart - ${t.raiseDispute}
+${t.enterWeek}`;
 
     } else if (section === "2" && parts.length === 2) {
       const week = parts[1];
       if (!/^\d+$/.test(week)) {
-        response = `END Invalid week number. Please redial and enter digits only.`;
+        response = `END ${t.invalidWeek}`;
       } else {
-        response = `CON Week ${week} dispute
-Enter your MoMo transaction ID (from your SMS receipt):`;
+        response = `CON ${fill(t.weekDispute, { week })}
+${t.enterTxid}`;
       }
 
     } else if (section === "2" && parts.length === 3) {
@@ -331,11 +448,11 @@ Enter your MoMo transaction ID (from your SMS receipt):`;
       const txid = parts[2];
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
-        response = `END You are not registered in any PesaSmart group.`;
+        response = `END ${t.notRegisteredShort}`;
       } else if (!/^\d+$/.test(week)) {
-        response = `END Invalid week number. Please redial and try again.`;
+        response = `END ${t.invalidWeekRetry}`;
       } else if (!txid || txid.length < 3) {
-        response = `END Invalid transaction ID. Please redial and try again.`;
+        response = `END ${t.invalidTxid}`;
       } else {
         const ins = await pool.query(
           "INSERT INTO contribution_disputes (group_id, member_id, disputed_week, momo_txid) VALUES ($1, $2, $3, $4) RETURNING dispute_id",
@@ -343,14 +460,12 @@ Enter your MoMo transaction ID (from your SMS receipt):`;
         );
         const ref = String(ins.rows[0].dispute_id).padStart(4, "0");
 
-        // SMS to the member (confirmation)
         await sendSms(
           m.user_id,
           phoneNumber,
           `PesaSmart: Dispute REF#${ref} raised for Week ${week}. Your organiser has been notified. (Transaction ID recorded, not independently verified.)`
         );
 
-        // SMS to the organiser (notification)
         const orgRes = await pool.query(
           `SELECT u.user_id, u.phone_number
            FROM ikimina_groups g
@@ -367,52 +482,50 @@ Enter your MoMo transaction ID (from your SMS receipt):`;
           );
         }
 
-        response = `END Dispute REF#${ref} raised for Week ${week}.
-Your group organiser has been notified.
-Note: this records your transaction ID; it is not independent verification.`;
+        response = `END ${fill(t.disputeRaised, { ref, week })}`;
       }
 
     // ===== 3. MEMBER CHANGES =====
-    } else if (text === "3") {
-      response = `CON PesaSmart - Member changes
-1. Request to exit group
-2. Update phone number`;
+    } else if (menu === "3") {
+      response = `CON PesaSmart - ${t.memberChanges}
+1. ${t.requestExit}
+2. ${t.updatePhone}`;
 
-    } else if (text === "3*1") {
+    } else if (menu === "3*1") {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
-        response = `END You are not registered in any PesaSmart group.`;
+        response = `END ${t.notRegisteredShort}`;
       } else {
         await pool.query(
           "INSERT INTO membership_changes (group_id, affected_user, change_type) VALUES ($1, $2, 'exit')",
           [m.group_id, m.user_id]
         );
-        response = `END Your exit request has been sent to the group for approval.`;
+        response = `END ${t.exitSent}`;
       }
 
-    } else if (text === "3*2") {
-      response = `CON Enter your new phone number:`;
+    } else if (menu === "3*2") {
+      response = `CON ${t.enterNewPhone}`;
 
     } else if (section === "3" && parts.length === 3 && parts[1] === "2") {
       const newPhone = parts[2];
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
-        response = `END You are not registered in any PesaSmart group.`;
+        response = `END ${t.notRegisteredShort}`;
       } else if (!/^\d{6,15}$/.test(newPhone)) {
-        response = `END Invalid phone number. Please redial and enter digits only.`;
+        response = `END ${t.invalidPhone}`;
       } else {
         await pool.query(
           "INSERT INTO membership_changes (group_id, affected_user, change_type, details) VALUES ($1, $2, 'phone_update', $3)",
           [m.group_id, m.user_id, newPhone]
         );
-        response = `END Your phone number update request has been sent.`;
+        response = `END ${t.phoneSent}`;
       }
 
     } else {
-      response = `END Invalid choice. Please try again.`;
+      response = `END ${t.invalidChoice}`;
     }
   } catch (err) {
-    response = `END Sorry, something went wrong. Please try again later.`;
+    response = `END ${t.somethingWrong}`;
   }
 
   res.set("Content-Type", "text/plain");
@@ -433,7 +546,6 @@ app.post("/api/groups", async (req, res) => {
   }
 });
 
-// List all groups created by an organiser
 app.get("/api/groups", async (req, res) => {
   const { createdBy } = req.query;
   try {
@@ -447,7 +559,6 @@ app.get("/api/groups", async (req, res) => {
   }
 });
 
-// Get a single group
 app.get("/api/groups/:groupId", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM ikimina_groups WHERE group_id = $1", [req.params.groupId]);
@@ -458,7 +569,6 @@ app.get("/api/groups/:groupId", async (req, res) => {
   }
 });
 
-// List members of a group (in rotation order)
 app.get("/api/groups/:groupId/members", async (req, res) => {
   try {
     const result = await pool.query(
@@ -476,7 +586,6 @@ app.get("/api/groups/:groupId/members", async (req, res) => {
   }
 });
 
-// Add a member to a group
 app.post("/api/groups/:groupId/members", async (req, res) => {
   const { groupId } = req.params;
   const { fullName, phoneNumber } = req.body;
@@ -517,7 +626,6 @@ app.post("/api/groups/:groupId/members", async (req, res) => {
   }
 });
 
-// Update a member's contribution status (organiser confirms payment)
 app.patch("/api/members/:memberId/contribution", async (req, res) => {
   const { memberId } = req.params;
   const { status } = req.body;
@@ -533,7 +641,6 @@ app.patch("/api/members/:memberId/contribution", async (req, res) => {
   }
 });
 
-// List disputes for a group
 app.get("/api/groups/:groupId/disputes", async (req, res) => {
   try {
     const result = await pool.query(
@@ -552,7 +659,6 @@ app.get("/api/groups/:groupId/disputes", async (req, res) => {
   }
 });
 
-// Resolve (or reopen) a dispute
 app.patch("/api/disputes/:disputeId", async (req, res) => {
   const { disputeId } = req.params;
   const { status } = req.body;
@@ -569,7 +675,6 @@ app.patch("/api/disputes/:disputeId", async (req, res) => {
   }
 });
 
-// List membership change requests for a group
 app.get("/api/groups/:groupId/changes", async (req, res) => {
   try {
     const result = await pool.query(
@@ -587,7 +692,6 @@ app.get("/api/groups/:groupId/changes", async (req, res) => {
   }
 });
 
-// Approve or reject a membership change request
 app.patch("/api/changes/:changeId", async (req, res) => {
   const { changeId } = req.params;
   const { decision } = req.body;
@@ -647,7 +751,6 @@ app.patch("/api/changes/:changeId", async (req, res) => {
   }
 });
 
-// Send an SMS broadcast to all active members of a group
 app.post("/api/groups/:groupId/broadcast", async (req, res) => {
   const { groupId } = req.params;
   const { message } = req.body;
