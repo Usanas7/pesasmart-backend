@@ -85,6 +85,9 @@ app.post("/api/login", async (req, res) => {
       return res.status(401).json({ status: "error", message: "Invalid phone number or PIN" });
     }
     const user = result.rows[0];
+    if (!user.pin) {
+      return res.status(401).json({ status: "error", message: "Invalid phone number or PIN" });
+    }
     const match = await bcrypt.compare(pin, user.pin);
     if (!match) {
       return res.status(401).json({ status: "error", message: "Invalid phone number or PIN" });
@@ -280,6 +283,24 @@ async function sendSms(userId, phoneNumber, message) {
         );
       } catch (e) { /* ignore logging failure */ }
     }
+  }
+}
+
+// Send an SMS to all active members of a group (for shared-state changes)
+async function sendGroupSms(groupId, message) {
+  try {
+    const members = await pool.query(
+      `SELECT u.user_id, u.phone_number
+       FROM ikimina_members m
+       JOIN users u ON u.user_id = m.user_id
+       WHERE m.group_id = $1 AND m.status = 'active'`,
+      [groupId]
+    );
+    for (const mem of members.rows) {
+      await sendSms(mem.user_id, mem.phone_number, message);
+    }
+  } catch (err) {
+    console.error("Group SMS failed:", err.message);
   }
 }
 
@@ -674,7 +695,41 @@ app.patch("/api/members/:memberId/contribution", requireAuth, async (req, res) =
       [status, memberId]
     );
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Member not found" });
-    res.json({ status: "success", member: result.rows[0] });
+    const member = result.rows[0];
+
+    if (status === "paid") {
+      const u = await pool.query("SELECT phone_number FROM users WHERE user_id = $1", [member.user_id]);
+      if (u.rows[0]) {
+        await sendSms(member.user_id, u.rows[0].phone_number, "PesaSmart: Your contribution for this round has been confirmed as paid.");
+      }
+    }
+
+    res.json({ status: "success", member });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+// Mark a member's payout as received (advances the rotation)
+app.patch("/api/members/:memberId/payout", requireAuth, async (req, res) => {
+  const { memberId } = req.params;
+  const { received } = req.body;
+  try {
+    const result = await pool.query(
+      "UPDATE ikimina_members SET payout_received = $1 WHERE member_id = $2 RETURNING *",
+      [received, memberId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Member not found" });
+    const member = result.rows[0];
+
+    if (received) {
+      const u = await pool.query("SELECT phone_number FROM users WHERE user_id = $1", [member.user_id]);
+      if (u.rows[0]) {
+        await sendSms(member.user_id, u.rows[0].phone_number, "PesaSmart: You have been recorded as having received your payout for this round.");
+      }
+    }
+
+    res.json({ status: "success", member });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
@@ -708,7 +763,22 @@ app.patch("/api/disputes/:disputeId", requireAuth, async (req, res) => {
       [status, disputeId]
     );
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Dispute not found" });
-    res.json({ status: "success", dispute: result.rows[0] });
+    const dispute = result.rows[0];
+
+    if (status === "resolved") {
+      const u = await pool.query(
+        `SELECT u.user_id, u.phone_number
+         FROM ikimina_members m JOIN users u ON u.user_id = m.user_id
+         WHERE m.member_id = $1`,
+        [dispute.member_id]
+      );
+      if (u.rows[0]) {
+        const ref = String(dispute.dispute_id).padStart(4, "0");
+        await sendSms(u.rows[0].user_id, u.rows[0].phone_number, `PesaSmart: Your dispute REF#${ref} has been resolved by your organiser.`);
+      }
+    }
+
+    res.json({ status: "success", dispute });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
@@ -738,6 +808,10 @@ app.patch("/api/changes/:changeId", requireAuth, async (req, res) => {
     const cRes = await pool.query("SELECT * FROM membership_changes WHERE change_id = $1", [changeId]);
     if (cRes.rows.length === 0) return res.status(404).json({ status: "error", message: "Request not found" });
     const change = cRes.rows[0];
+
+    if (change.status === "approved") {
+      return res.status(409).json({ status: "error", message: "This request was already approved and cannot be changed." });
+    }
 
     const memberRes = await pool.query(
       "SELECT user_id, phone_number, full_name FROM users WHERE user_id = $1",
@@ -779,6 +853,15 @@ app.patch("/api/changes/:changeId", requireAuth, async (req, res) => {
         ? change.details
         : member.phone_number;
       await sendSms(member.user_id, notifyPhone, msg);
+    }
+
+    // Group-wide notice for shared-state changes
+    if (decision === "approved" && member) {
+      if (change.change_type === "exit") {
+        await sendGroupSms(change.group_id, `PesaSmart: ${member.full_name} has left the group. The rotation has been updated.`);
+      } else if (change.change_type === "phone_update") {
+        await sendGroupSms(change.group_id, `PesaSmart: ${member.full_name}'s registered phone number has been updated.`);
+      }
     }
 
     res.json({ status: "success", change: result.rows[0] });
