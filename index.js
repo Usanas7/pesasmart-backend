@@ -8,10 +8,12 @@ app.use(express.urlencoded({ extended: false }));
 const cors = require("cors");
 app.use(cors());
 const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
 const pool = require("./db");
 
 const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || "pesasmart-dev-secret-change-me";
 
 app.get("/", (req, res) => {
   res.send("PesaSmart API is running");
@@ -26,15 +28,44 @@ app.get("/db-check", async (req, res) => {
   }
 });
 
+// Middleware: require a valid login token
+function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token) {
+    return res.status(401).json({ status: "error", message: "Not authenticated. Please log in." });
+  }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ status: "error", message: "Session expired. Please log in again." });
+  }
+}
+
 app.post("/api/signup", async (req, res) => {
   const { fullName, phoneNumber, pin } = req.body;
+
+  if (!fullName || !fullName.trim()) {
+    return res.status(400).json({ status: "error", message: "Full name is required" });
+  }
+  if (!/^\d{9,15}$/.test((phoneNumber || "").replace(/\D/g, ""))) {
+    return res.status(400).json({ status: "error", message: "Enter a valid phone number (digits only)" });
+  }
+  if (!/^\d{5}$/.test(pin || "")) {
+    return res.status(400).json({ status: "error", message: "PIN must be exactly 5 digits" });
+  }
+
   try {
     const hashedPin = await bcrypt.hash(pin, 10);
     const result = await pool.query(
       "INSERT INTO users (full_name, phone_number, pin) VALUES ($1, $2, $3) RETURNING user_id, full_name, phone_number",
-      [fullName, phoneNumber, hashedPin]
+      [fullName.trim(), phoneNumber.trim(), hashedPin]
     );
-    res.status(201).json({ status: "success", user: result.rows[0] });
+    const user = result.rows[0];
+    const token = jwt.sign({ user_id: user.user_id, full_name: user.full_name }, JWT_SECRET, { expiresIn: "7d" });
+    res.status(201).json({ status: "success", user, token });
   } catch (err) {
     if (err.code === "23505") {
       return res.status(409).json({ status: "error", message: "Phone number already registered" });
@@ -45,8 +76,11 @@ app.post("/api/signup", async (req, res) => {
 
 app.post("/api/login", async (req, res) => {
   const { phoneNumber, pin } = req.body;
+  if (!phoneNumber || !pin) {
+    return res.status(400).json({ status: "error", message: "Phone number and PIN are required" });
+  }
   try {
-    const result = await pool.query("SELECT * FROM users WHERE phone_number = $1", [phoneNumber]);
+    const result = await pool.query("SELECT * FROM users WHERE phone_number = $1", [phoneNumber.trim()]);
     if (result.rows.length === 0) {
       return res.status(401).json({ status: "error", message: "Invalid phone number or PIN" });
     }
@@ -55,13 +89,22 @@ app.post("/api/login", async (req, res) => {
     if (!match) {
       return res.status(401).json({ status: "error", message: "Invalid phone number or PIN" });
     }
-    res.json({ status: "success", user: { user_id: user.user_id, full_name: user.full_name, phone_number: user.phone_number } });
+    const token = jwt.sign({ user_id: user.user_id, full_name: user.full_name }, JWT_SECRET, { expiresIn: "7d" });
+    res.json({
+      status: "success",
+      user: { user_id: user.user_id, full_name: user.full_name, phone_number: user.phone_number },
+      token,
+    });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
 });
 
+// ===========================================================================
 // USSD TRANSLATIONS
+// en = English (final). rw = Kinyarwanda.
+// {placeholders} in braces are filled in by the code - keep them as-is.
+// ===========================================================================
 const T = {
   en: {
     groupStatus: "Group Status",
@@ -157,7 +200,6 @@ function fill(str, vars) {
   return out;
 }
 
-// Helper: find a member (and their group) by phone number, matching on the last 9 digits
 async function findMembershipByPhone(phoneNumber) {
   const last9 = (phoneNumber || "").replace(/\D/g, "").slice(-9);
   const result = await pool.query(
@@ -248,7 +290,6 @@ app.post("/ussd", async (req, res) => {
 
   const rawParts = text === "" ? [] : text.split("*");
 
-  // First screen: choose language
   if (text === "") {
     res.set("Content-Type", "text/plain");
     return res.send(`CON PesaSmart
@@ -257,13 +298,11 @@ Welcome / Murakaza neza
 2. Kinyarwanda`);
   }
 
-  // First digit is the language. Peel it off so the rest works normally.
   const langDigit = rawParts[0];
   const lang = langDigit === "2" ? "rw" : "en";
   const t = T[lang];
 
-  // The "menu path" after the language choice
-  const parts = rawParts.slice(1); // e.g. ["1","2"] means Group Status > Who paid
+  const parts = rawParts.slice(1);
   const menu = parts.length === 0 ? "" : parts.join("*");
   const section = parts[0];
   const last = parts[parts.length - 1];
@@ -290,21 +329,17 @@ ${info.header}
   }
 
   try {
-    // Just chose language -> show main menu
     if (menu === "") {
       response = mainMenu();
 
-    // Back within Group Status
     } else if (section === "1" && last === "0" && parts.length >= 3) {
       const m = await findMembershipByPhone(phoneNumber);
       response = m ? await groupStatusMenu(m) : `END ${t.notRegisteredShort}`;
 
-    // Group Status menu
     } else if (menu === "1") {
       const m = await findMembershipByPhone(phoneNumber);
       response = m ? await groupStatusMenu(m) : `END ${t.notRegistered}`;
 
-    // My status
     } else if (section === "1" && last === "1" && parts.length > 1) {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -361,7 +396,6 @@ ${nextLine}
 ${t.back}`;
       }
 
-    // Who has paid
     } else if (section === "1" && last === "2") {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -382,7 +416,6 @@ ${lines.join("\n")}
 ${t.back}`;
       }
 
-    // Rotation order
     } else if (section === "1" && last === "3") {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -409,7 +442,6 @@ ${lines.join("\n")}
 ${t.back}`;
       }
 
-    // Open disputes count
     } else if (section === "1" && last === "4") {
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
@@ -423,7 +455,6 @@ ${t.back}`;
 ${t.back}`;
       }
 
-    // ===== 2. RAISE A DISPUTE =====
     } else if (menu === "2") {
       response = `CON PesaSmart - ${t.raiseDispute}
 ${t.enterWeek}`;
@@ -479,7 +510,6 @@ ${t.enterTxid}`;
         response = `END ${fill(t.disputeRaised, { ref, week })}`;
       }
 
-    // ===== 3. MEMBER CHANGES =====
     } else if (menu === "3") {
       response = `CON PesaSmart - ${t.memberChanges}
 1. ${t.requestExit}
@@ -527,12 +557,21 @@ ${t.enterTxid}`;
 });
 
 // Create a new Ikimina group
-app.post("/api/groups", async (req, res) => {
+app.post("/api/groups", requireAuth, async (req, res) => {
   const { name, contributionAmount, frequency, cycleLength, startDate, createdBy } = req.body;
+  if (!name || !name.trim()) {
+    return res.status(400).json({ status: "error", message: "Group name is required" });
+  }
+  if (isNaN(contributionAmount) || Number(contributionAmount) <= 0) {
+    return res.status(400).json({ status: "error", message: "Enter a valid contribution amount" });
+  }
+  if (isNaN(cycleLength) || Number(cycleLength) < 1) {
+    return res.status(400).json({ status: "error", message: "Enter a valid cycle length" });
+  }
   try {
     const result = await pool.query(
       "INSERT INTO ikimina_groups (name, contribution_amount, frequency, cycle_length, start_date, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
-      [name, contributionAmount, frequency, cycleLength, startDate, createdBy]
+      [name.trim(), contributionAmount, frequency, cycleLength, startDate, createdBy]
     );
     res.status(201).json({ status: "success", group: result.rows[0] });
   } catch (err) {
@@ -540,7 +579,7 @@ app.post("/api/groups", async (req, res) => {
   }
 });
 
-app.get("/api/groups", async (req, res) => {
+app.get("/api/groups", requireAuth, async (req, res) => {
   const { createdBy } = req.query;
   try {
     const result = await pool.query(
@@ -553,7 +592,7 @@ app.get("/api/groups", async (req, res) => {
   }
 });
 
-app.get("/api/groups/:groupId", async (req, res) => {
+app.get("/api/groups/:groupId", requireAuth, async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM ikimina_groups WHERE group_id = $1", [req.params.groupId]);
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Group not found" });
@@ -563,7 +602,7 @@ app.get("/api/groups/:groupId", async (req, res) => {
   }
 });
 
-app.get("/api/groups/:groupId/members", async (req, res) => {
+app.get("/api/groups/:groupId/members", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT m.member_id, m.user_id, m.rotation_order, m.contribution_status, m.payout_received, m.status,
@@ -580,18 +619,24 @@ app.get("/api/groups/:groupId/members", async (req, res) => {
   }
 });
 
-app.post("/api/groups/:groupId/members", async (req, res) => {
+app.post("/api/groups/:groupId/members", requireAuth, async (req, res) => {
   const { groupId } = req.params;
   const { fullName, phoneNumber } = req.body;
+  if (!fullName || !fullName.trim()) {
+    return res.status(400).json({ status: "error", message: "Member name is required" });
+  }
+  if (!/^\d{9,15}$/.test((phoneNumber || "").replace(/\D/g, ""))) {
+    return res.status(400).json({ status: "error", message: "Enter a valid phone number (digits only)" });
+  }
   try {
-    let userResult = await pool.query("SELECT user_id FROM users WHERE phone_number = $1", [phoneNumber]);
+    let userResult = await pool.query("SELECT user_id FROM users WHERE phone_number = $1", [phoneNumber.trim()]);
     let userId;
     if (userResult.rows.length > 0) {
       userId = userResult.rows[0].user_id;
     } else {
       const insertUser = await pool.query(
         "INSERT INTO users (full_name, phone_number) VALUES ($1, $2) RETURNING user_id",
-        [fullName, phoneNumber]
+        [fullName.trim(), phoneNumber.trim()]
       );
       userId = insertUser.rows[0].user_id;
     }
@@ -620,7 +665,7 @@ app.post("/api/groups/:groupId/members", async (req, res) => {
   }
 });
 
-app.patch("/api/members/:memberId/contribution", async (req, res) => {
+app.patch("/api/members/:memberId/contribution", requireAuth, async (req, res) => {
   const { memberId } = req.params;
   const { status } = req.body;
   try {
@@ -635,7 +680,7 @@ app.patch("/api/members/:memberId/contribution", async (req, res) => {
   }
 });
 
-app.get("/api/groups/:groupId/disputes", async (req, res) => {
+app.get("/api/groups/:groupId/disputes", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT d.dispute_id, d.disputed_week, d.momo_txid, d.status, d.raised_at, d.resolved_at,
@@ -653,7 +698,7 @@ app.get("/api/groups/:groupId/disputes", async (req, res) => {
   }
 });
 
-app.patch("/api/disputes/:disputeId", async (req, res) => {
+app.patch("/api/disputes/:disputeId", requireAuth, async (req, res) => {
   const { disputeId } = req.params;
   const { status } = req.body;
   try {
@@ -669,7 +714,7 @@ app.patch("/api/disputes/:disputeId", async (req, res) => {
   }
 });
 
-app.get("/api/groups/:groupId/changes", async (req, res) => {
+app.get("/api/groups/:groupId/changes", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT c.change_id, c.change_type, c.status, c.details, c.created_at,
@@ -686,7 +731,7 @@ app.get("/api/groups/:groupId/changes", async (req, res) => {
   }
 });
 
-app.patch("/api/changes/:changeId", async (req, res) => {
+app.patch("/api/changes/:changeId", requireAuth, async (req, res) => {
   const { changeId } = req.params;
   const { decision } = req.body;
   try {
@@ -745,7 +790,7 @@ app.patch("/api/changes/:changeId", async (req, res) => {
   }
 });
 
-app.post("/api/groups/:groupId/broadcast", async (req, res) => {
+app.post("/api/groups/:groupId/broadcast", requireAuth, async (req, res) => {
   const { groupId } = req.params;
   const { message } = req.body;
   if (!message || !message.trim()) {
