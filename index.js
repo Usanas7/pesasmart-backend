@@ -801,6 +801,75 @@ app.get("/api/groups/:groupId/changes", requireAuth, async (req, res) => {
   }
 });
 
+// A group's live summary (round, contributions, disputes, next payout) — mirrors the USSD header
+app.get("/api/groups/:groupId/summary", requireAuth, async (req, res) => {
+  const { groupId } = req.params;
+  try {
+    const gRes = await pool.query(
+      "SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1",
+      [groupId]
+    );
+    if (gRes.rows.length === 0) return res.status(404).json({ status: "error", message: "Group not found" });
+    const g = gRes.rows[0];
+
+    // Contributions paid / total active
+    const contribRes = await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE contribution_status = 'paid') AS paid, COUNT(*) AS total
+       FROM ikimina_members WHERE group_id = $1 AND status = 'active'`,
+      [groupId]
+    );
+    const { paid, total } = contribRes.rows[0];
+
+    // Open disputes
+    const dispRes = await pool.query(
+      "SELECT COUNT(*) AS open FROM contribution_disputes WHERE group_id = $1 AND status = 'open'",
+      [groupId]
+    );
+    const openDisputes = dispRes.rows[0].open;
+
+    // Current round from start date
+    let round = null;
+    if (g.start_date) {
+      const start = new Date(g.start_date);
+      const daysElapsed = Math.floor((Date.now() - start.getTime()) / (1000 * 60 * 60 * 24));
+      const periodDays = g.frequency === "Weekly" ? 7 : 30;
+      round = Math.floor(daysElapsed / periodDays) + 1;
+      if (round < 1) round = 1;
+      if (round > g.cycle_length) round = g.cycle_length;
+    }
+
+    // Next payout: earliest active member not yet paid out
+    const nextRes = await pool.query(
+      `SELECT u.full_name, mm.rotation_order,
+              (g.start_date + ((mm.rotation_order - 1) *
+                CASE WHEN g.frequency = 'Weekly' THEN INTERVAL '1 week'
+                     ELSE INTERVAL '1 month' END))::date AS payout_date
+       FROM ikimina_members mm
+       JOIN users u ON u.user_id = mm.user_id
+       JOIN ikimina_groups g ON g.group_id = mm.group_id
+       WHERE mm.group_id = $1 AND mm.status = 'active' AND mm.payout_received = FALSE
+       ORDER BY mm.rotation_order LIMIT 1`,
+      [groupId]
+    );
+    const next = nextRes.rows[0] || null;
+
+    res.json({
+      status: "success",
+      summary: {
+        round,
+        cycleLength: g.cycle_length,
+        paid: Number(paid),
+        total: Number(total),
+        openDisputes: Number(openDisputes),
+        nextPayoutName: next ? next.full_name : null,
+        nextPayoutDate: next ? next.payout_date : null,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
 app.patch("/api/changes/:changeId", requireAuth, async (req, res) => {
   const { changeId } = req.params;
   const { decision } = req.body;
