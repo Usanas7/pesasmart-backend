@@ -855,6 +855,24 @@ app.patch("/api/changes/:changeId", requireAuth, async (req, res) => {
       await sendSms(member.user_id, notifyPhone, msg);
     }
 
+    // Group-wide notice for shared-state changes
+    if (decision === "approved" && member) {
+      if (change.change_type === "exit") {
+        await sendGroupSms(change.group_id, `PesaSmart: ${member.full_name} has left the group. The rotation has been updated.`);
+      } else if (change.change_type === "phone_update") {
+        await sendGroupSms(change.group_id, `PesaSmart: ${member.full_name}'s registered phone number has been updated.`);
+      }
+    }
+
+    res.json({ status: "success", change: result.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ status: "error", message: "That phone number is already in use by another user" });
+    }
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
 // Dashboard summary stats for an organiser
 app.get("/api/stats", requireAuth, async (req, res) => {
   const { createdBy } = req.query;
@@ -871,28 +889,10 @@ app.get("/api/stats", requireAuth, async (req, res) => {
          (SELECT COUNT(*) FROM membership_changes c
             JOIN ikimina_groups g ON g.group_id = c.group_id
             WHERE g.created_by = $1 AND c.status = 'pending') AS pending_requests`,
-      [req.params.createdBy || req.query.createdBy]
+      [createdBy]
     );
     res.json({ status: "success", stats: result.rows[0] });
   } catch (err) {
-    res.status(500).json({ status: "error", message: err.message });
-  }
-});
-
-    // Group-wide notice for shared-state changes
-    if (decision === "approved" && member) {
-      if (change.change_type === "exit") {
-        await sendGroupSms(change.group_id, `PesaSmart: ${member.full_name} has left the group. The rotation has been updated.`);
-      } else if (change.change_type === "phone_update") {
-        await sendGroupSms(change.group_id, `PesaSmart: ${member.full_name}'s registered phone number has been updated.`);
-      }
-    }
-
-    res.json({ status: "success", change: result.rows[0] });
-  } catch (err) {
-    if (err.code === "23505") {
-      return res.status(409).json({ status: "error", message: "That phone number is already in use by another user" });
-    }
     res.status(500).json({ status: "error", message: err.message });
   }
 });
