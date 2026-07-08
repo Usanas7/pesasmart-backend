@@ -855,6 +855,30 @@ app.patch("/api/changes/:changeId", requireAuth, async (req, res) => {
       await sendSms(member.user_id, notifyPhone, msg);
     }
 
+// Dashboard summary stats for an organiser
+app.get("/api/stats", requireAuth, async (req, res) => {
+  const { createdBy } = req.query;
+  try {
+    const result = await pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM ikimina_groups WHERE created_by = $1) AS groups,
+         (SELECT COUNT(*) FROM ikimina_members m
+            JOIN ikimina_groups g ON g.group_id = m.group_id
+            WHERE g.created_by = $1 AND m.status = 'active') AS members,
+         (SELECT COUNT(*) FROM contribution_disputes d
+            JOIN ikimina_groups g ON g.group_id = d.group_id
+            WHERE g.created_by = $1 AND d.status = 'open') AS open_disputes,
+         (SELECT COUNT(*) FROM membership_changes c
+            JOIN ikimina_groups g ON g.group_id = c.group_id
+            WHERE g.created_by = $1 AND c.status = 'pending') AS pending_requests`,
+      [req.params.createdBy || req.query.createdBy]
+    );
+    res.json({ status: "success", stats: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
     // Group-wide notice for shared-state changes
     if (decision === "approved" && member) {
       if (change.change_type === "exit") {
