@@ -870,6 +870,22 @@ app.get("/api/groups/:groupId/summary", requireAuth, async (req, res) => {
   }
 });
 
+// Delete a group and all its related data
+app.delete("/api/groups/:groupId", requireAuth, async (req, res) => {
+  const { groupId } = req.params;
+  try {
+    // Delete children first (disputes, changes, members), then the group
+    await pool.query("DELETE FROM contribution_disputes WHERE group_id = $1", [groupId]);
+    await pool.query("DELETE FROM membership_changes WHERE group_id = $1", [groupId]);
+    await pool.query("DELETE FROM ikimina_members WHERE group_id = $1", [groupId]);
+    const result = await pool.query("DELETE FROM ikimina_groups WHERE group_id = $1 RETURNING group_id", [groupId]);
+    if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Group not found" });
+    res.json({ status: "success", deleted: result.rows[0].group_id });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
 app.patch("/api/changes/:changeId", requireAuth, async (req, res) => {
   const { changeId } = req.params;
   const { decision } = req.body;
