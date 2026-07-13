@@ -103,11 +103,7 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// ===========================================================================
-// USSD TRANSLATIONS
-// en = English (final). rw = Kinyarwanda.
-// {placeholders} in braces are filled in by the code - keep them as-is.
-// ===========================================================================
+
 const T = {
   en: {
     groupStatus: "Group Status",
@@ -124,13 +120,17 @@ const T = {
     invalidChoice: "Invalid choice. Please try again.",
     position: "Position",
     of: "of",
+    round: "Round",
+    contributionsLabel: "Contributions",
+    deadline: "Deadline",
+    notSet: "not set",
     oweNothing: "You owe: nothing (paid)",
     oweAmount: "You owe: {amount} RWF",
     payoutReceivedYes: "Payout received: yes",
     payoutReceivedNo: "Payout received: not yet",
     turnAlready: "Your turn: already received",
-    turnNext: "Your turn: you are next",
-    turnRounds: "Your turn: in {n} round(s)",
+    turnDate: "Your turn: {date}",
+    turnUnknown: "Your turn: not scheduled",
     nextPayoutName: "Next payout: {name} on {date}",
     nextPayoutNameNoDate: "Next payout: {name}",
     nextPayoutComplete: "Next payout: cycle complete",
@@ -139,12 +139,18 @@ const T = {
     currentTurn: "<- current turn",
     openDisputesCount: "Open disputes in this cycle: {n}",
     enterWeek: "Enter the week number you are disputing:",
+    whatIssue: "What is the issue?",
+    issuePaidUnpaid: "I paid but marked unpaid",
+    issueWrongAmount: "Wrong amount recorded",
+    issueNoPayout: "I did not receive my payout",
+    issueWrongPosition: "My rotation position is wrong",
+    issueOther: "Other",
     enterTxid: "Enter your MoMo transaction ID (from your SMS receipt):",
     weekDispute: "Week {week} dispute",
     invalidWeek: "Invalid week number. Please redial and enter digits only.",
     invalidWeekRetry: "Invalid week number. Please redial and try again.",
     invalidTxid: "Invalid transaction ID. Please redial and try again.",
-    disputeRaised: "Dispute REF#{ref} raised for Week {week}.\nYour group organiser has been notified.\nNote: this records your transaction ID; it is not independent verification.",
+    disputeRaised: "Dispute REF#{ref} raised for Week {week}.\nYour group organiser has been notified.\nNote: this records your report; it is not independent verification.",
     requestExit: "Request to exit group",
     updatePhone: "Update phone number",
     enterNewPhone: "Enter your new phone number:",
@@ -167,13 +173,17 @@ const T = {
     invalidChoice: " Ongera ugerageze.",
     position: "Umwanya",
     of: "wa",
+    round: "Icyiciro",
+    contributionsLabel: "Imisanzu",
+    deadline: "Itariki ntarengwa",
+    notSet: "ntiyagenywe",
     oweNothing: "umwenda: ntawo (wishyuye)",
     oweAmount: "Ufite umwenda: {amount} RWF",
     payoutReceivedYes: "Wahawe amafaranga: Yego",
     payoutReceivedNo: "Wahawe amafaranga: Oya",
     turnAlready: "Inshuro yawe: wamaze kwishyurwa",
-    turnNext: "Inshuro yawe: uzakurikira",
-    turnRounds: "Inshuro yawe: mu byiciro {n}",
+    turnDate: "Inshuro yawe: {date}",
+    turnUnknown: "Inshuro yawe: ntiyagenwe",
     nextPayoutName: "Ukurikiyeho kwishyurwa: {name} ku wa {date}",
     nextPayoutNameNoDate: "Uzakurikiraho: {name}",
     nextPayoutComplete: "Uzakurikiraho: uruziga rwarangiye",
@@ -182,12 +192,18 @@ const T = {
     currentTurn: "<- ugezweho",
     openDisputesCount: "Ibibazo bitaracyemurwa : {n}",
     enterWeek: "Andika icyumweru ufiteho ikibazo:",
+    whatIssue: "Ikibazo ni ikihe?",
+    issuePaidUnpaid: "Nishyuye ariko handitse ko ntarishyura",
+    issueWrongAmount: "Amafaranga yanditse si yo",
+    issueNoPayout: "Sinabonye amafaranga yanjye",
+    issueWrongPosition: "Umwanya wanjye si wo",
+    issueOther: "Ikindi kibazo",
     enterTxid: "Andika nomero y'ubwishyu bwa MoMo (iri kuri SMS yawe):",
     weekDispute: "icyumweru ufiteho ikibazo {week}",
     invalidWeek: "Nomero y'icyumweru ntayabonetse. Ongera wandike (imibare gusa).",
     invalidWeekRetry: "Nomero y'icyumweru ntago ariyo. Ongera.",
     invalidTxid: "Nomero y'ubwishyu ntago ariyo. Ongera uhamagare.",
-    disputeRaised: "Ikibazo REF#{ref} cyatanzwe ku cyumweru {week}.\nUmuyobozi w'itsinda yamenyeshejwe.\nIcyitonderwa: iyi nomero yanditswe ariko ntabwo yagenzuwe.",
+    disputeRaised: "Ikibazo REF#{ref} cyatanzwe ku cyumweru {week}.\nUmuyobozi w'itsinda yamenyeshejwe.\nIcyitonderwa: ibi byanditswe ariko ntabwo byagenzuwe.",
     requestExit: "Gusaba kuva mu itsinda",
     updatePhone: "Guhindura numero ya telefone",
     enterNewPhone: "Andika numero nshya ya telefone:",
@@ -197,10 +213,33 @@ const T = {
   },
 };
 
+// Dispute issue types: keys 1-5 on the USSD menu.
+// "needsTxid" = money-related, so we ask for the MoMo transaction ID.
+const DISPUTE_TYPES = {
+  "1": { code: "paid_not_recorded", needsTxid: true,  labelKey: "issuePaidUnpaid" },
+  "2": { code: "wrong_amount",      needsTxid: true,  labelKey: "issueWrongAmount" },
+  "3": { code: "payout_not_received", needsTxid: false, labelKey: "issueNoPayout" },
+  "4": { code: "wrong_position",    needsTxid: false, labelKey: "issueWrongPosition" },
+  "5": { code: "other",             needsTxid: false, labelKey: "issueOther" },
+};
+
 function fill(str, vars) {
   let out = str;
   for (const k in vars) out = out.split(`{${k}}`).join(vars[k]);
   return out;
+}
+
+// Month names we control, so dates never render in the wrong language/locale
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function shortDate(d) {
+  if (!d) return "";
+  const dt = new Date(d);
+  return `${dt.getDate()} ${MONTHS[dt.getMonth()]}`;
+}
+function longDate(d) {
+  if (!d) return "";
+  const dt = new Date(d);
+  return `${dt.getDate()} ${MONTHS[dt.getMonth()]} ${dt.getFullYear()}`;
 }
 
 async function findMembershipByPhone(phoneNumber) {
@@ -208,6 +247,7 @@ async function findMembershipByPhone(phoneNumber) {
   const result = await pool.query(
     `SELECT m.member_id, m.user_id, m.rotation_order, m.contribution_status, m.payout_received,
             g.group_id, g.name AS group_name, g.cycle_length, g.contribution_amount,
+            g.frequency, g.start_date,
             u.full_name
      FROM ikimina_members m
      JOIN ikimina_groups g ON g.group_id = m.group_id
@@ -226,9 +266,17 @@ function shortName(fullName) {
   return `${parts[0]} ${parts[1][0]}.`;
 }
 
-async function weekInfo(group) {
+// A member's scheduled payout date, from their rotation position
+function payoutDateFor(startDate, frequency, rotationOrder) {
+  if (!startDate || !rotationOrder) return null;
+  const start = new Date(startDate);
+  const periodDays = frequency === "Weekly" ? 7 : 30;
+  return new Date(start.getTime() + (rotationOrder - 1) * periodDays * 24 * 60 * 60 * 1000);
+}
+
+async function weekInfo(group, t) {
   if (!group || !group.start_date) {
-    return { header: "Round -\nDeadline: not set" };
+    return { header: `${t.round} -\n${t.deadline}: ${t.notSet}` };
   }
   const start = new Date(group.start_date);
   const today = new Date();
@@ -241,7 +289,6 @@ async function weekInfo(group) {
   if (round > group.cycle_length) round = group.cycle_length;
 
   const deadline = new Date(start.getTime() + round * periodDays * msPerDay);
-  const dStr = deadline.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 
   const paidRes = await pool.query(
     `SELECT COUNT(*) FILTER (WHERE contribution_status = 'paid') AS paid,
@@ -252,9 +299,9 @@ async function weekInfo(group) {
   const { paid, total } = paidRes.rows[0];
 
   return {
-    header: `Round ${round} of ${group.cycle_length}
-Contributions: ${paid}/${total}
-Deadline: ${dStr}`,
+    header: `${t.round} ${round} ${t.of} ${group.cycle_length}
+${t.contributionsLabel} ${paid}/${total}
+${t.deadline}: ${shortDate(deadline)}`,
   };
 }
 
@@ -340,13 +387,58 @@ Welcome / Murakaza neza
       `SELECT group_id, name, cycle_length, frequency, start_date FROM ikimina_groups WHERE group_id = $1`,
       [m.group_id]
     );
-    const info = await weekInfo(g.rows[0]);
+    const info = await weekInfo(g.rows[0], t);
     return `CON PesaSmart - ${g.rows[0].name}
 ${info.header}
 1. ${t.myStatus}
 2. ${t.whoPaid}
 3. ${t.rotationOrder}
 4. ${t.openDisputes}`;
+  }
+
+  // The dispute issue menu (shown after the week number)
+  function issueMenu(week) {
+    return `CON ${fill(t.weekDispute, { week })}
+${t.whatIssue}
+1. ${t.issuePaidUnpaid}
+2. ${t.issueWrongAmount}
+3. ${t.issueNoPayout}
+4. ${t.issueWrongPosition}
+5. ${t.issueOther}`;
+  }
+
+  // Record the dispute, notify member + organiser, return the END screen
+  async function fileDispute(m, week, typeCode, txid) {
+    const ins = await pool.query(
+      "INSERT INTO contribution_disputes (group_id, member_id, disputed_week, momo_txid, dispute_type) VALUES ($1, $2, $3, $4, $5) RETURNING dispute_id",
+      [m.group_id, m.member_id, parseInt(week, 10), txid || null, typeCode]
+    );
+    const ref = String(ins.rows[0].dispute_id).padStart(4, "0");
+
+    await sendSms(
+      m.user_id,
+      phoneNumber,
+      `PesaSmart: Dispute REF#${ref} raised for Week ${week}. Your organiser has been notified. (Recorded as reported; not independently verified.)`
+    );
+
+    const orgRes = await pool.query(
+      `SELECT u.user_id, u.phone_number
+       FROM ikimina_groups g
+       JOIN users u ON u.user_id = g.created_by
+       WHERE g.group_id = $1`,
+      [m.group_id]
+    );
+    if (orgRes.rows[0]) {
+      const org = orgRes.rows[0];
+      const txPart = txid ? ` (TxID: ${txid})` : "";
+      await sendSms(
+        org.user_id,
+        org.phone_number,
+        `PesaSmart: A member raised dispute REF#${ref} for Week ${week}${txPart}. Please review in your dashboard.`
+      );
+    }
+
+    return `END ${fill(t.disputeRaised, { ref, week })}`;
   }
 
   try {
@@ -366,18 +458,9 @@ ${info.header}
       if (!m) {
         response = `END ${t.notRegisteredShort}`;
       } else {
-        const gRes = await pool.query(
-          `SELECT contribution_amount FROM ikimina_groups WHERE group_id = $1`,
-          [m.group_id]
-        );
-        const amount = gRes.rows[0].contribution_amount;
-        const aheadRes = await pool.query(
-          `SELECT COUNT(*) FROM ikimina_members
-           WHERE group_id = $1 AND status = 'active'
-             AND payout_received = FALSE AND rotation_order < $2`,
-          [m.group_id, m.rotation_order]
-        );
-        const ahead = parseInt(aheadRes.rows[0].count, 10);
+        const amount = m.contribution_amount;
+
+        // Next payout across the group (earliest active member not yet paid out)
         const nextRes = await pool.query(
           `SELECT u.full_name, mm.rotation_order,
                   (g.start_date + ((mm.rotation_order - 1) *
@@ -386,7 +469,7 @@ ${info.header}
            FROM ikimina_members mm
            JOIN users u ON u.user_id = mm.user_id
            JOIN ikimina_groups g ON g.group_id = mm.group_id
-           WHERE mm.group_id = $1 AND mm.payout_received = FALSE
+           WHERE mm.group_id = $1 AND mm.status = 'active' AND mm.payout_received = FALSE
            ORDER BY mm.rotation_order
            LIMIT 1`,
           [m.group_id]
@@ -396,17 +479,22 @@ ${info.header}
         if (!next) {
           nextLine = t.nextPayoutComplete;
         } else if (next.payout_date) {
-          const d = new Date(next.payout_date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-          nextLine = fill(t.nextPayoutName, { name: shortName(next.full_name), date: d });
+          nextLine = fill(t.nextPayoutName, { name: shortName(next.full_name), date: longDate(next.payout_date) });
         } else {
           nextLine = fill(t.nextPayoutNameNoDate, { name: shortName(next.full_name) });
         }
+
         const owe = m.contribution_status === "paid" ? t.oweNothing : fill(t.oweAmount, { amount });
         const gotPaid = m.payout_received ? t.payoutReceivedYes : t.payoutReceivedNo;
+
+        // "Your turn" now shows the member's own scheduled payout DATE
         let turnLine;
-        if (m.payout_received) turnLine = t.turnAlready;
-        else if (ahead === 0) turnLine = t.turnNext;
-        else turnLine = fill(t.turnRounds, { n: ahead });
+        if (m.payout_received) {
+          turnLine = t.turnAlready;
+        } else {
+          const myDate = payoutDateFor(m.start_date, m.frequency, m.rotation_order);
+          turnLine = myDate ? fill(t.turnDate, { date: longDate(myDate) }) : t.turnUnknown;
+        }
 
         response = `CON ${t.myStatus}
 ${t.position} ${m.rotation_order} ${t.of} ${m.cycle_length}
@@ -476,6 +564,8 @@ ${t.back}`;
 ${t.back}`;
       }
 
+    // ===== 2. RAISE A DISPUTE =====
+    // Flow: 2 -> week -> issue type -> [MoMo TxID if money-related] -> filed
     } else if (menu === "2") {
       response = `CON PesaSmart - ${t.raiseDispute}
 ${t.enterWeek}`;
@@ -485,52 +575,46 @@ ${t.enterWeek}`;
       if (!/^\d+$/.test(week)) {
         response = `END ${t.invalidWeek}`;
       } else {
-        response = `CON ${fill(t.weekDispute, { week })}
-${t.enterTxid}`;
+        response = issueMenu(week);
       }
 
     } else if (section === "2" && parts.length === 3) {
       const week = parts[1];
-      const txid = parts[2];
+      const choice = parts[2];
+      const type = DISPUTE_TYPES[choice];
       const m = await findMembershipByPhone(phoneNumber);
       if (!m) {
         response = `END ${t.notRegisteredShort}`;
       } else if (!/^\d+$/.test(week)) {
         response = `END ${t.invalidWeekRetry}`;
+      } else if (!type) {
+        response = `END ${t.invalidChoice}`;
+      } else if (type.needsTxid) {
+        // Money-related: ask for the transaction ID
+        response = `CON ${t[type.labelKey]}
+${t.enterTxid}`;
+      } else {
+        // Not money-related: no transaction ID needed, file it now
+        response = await fileDispute(m, week, type.code, null);
+      }
+
+    } else if (section === "2" && parts.length === 4) {
+      const week = parts[1];
+      const choice = parts[2];
+      const txid = parts[3];
+      const type = DISPUTE_TYPES[choice];
+      const m = await findMembershipByPhone(phoneNumber);
+      if (!m) {
+        response = `END ${t.notRegisteredShort}`;
+      } else if (!type) {
+        response = `END ${t.invalidChoice}`;
       } else if (!txid || txid.length < 3) {
         response = `END ${t.invalidTxid}`;
       } else {
-        const ins = await pool.query(
-          "INSERT INTO contribution_disputes (group_id, member_id, disputed_week, momo_txid) VALUES ($1, $2, $3, $4) RETURNING dispute_id",
-          [m.group_id, m.member_id, parseInt(week, 10), txid]
-        );
-        const ref = String(ins.rows[0].dispute_id).padStart(4, "0");
-
-        await sendSms(
-          m.user_id,
-          phoneNumber,
-          `PesaSmart: Dispute REF#${ref} raised for Week ${week}. Your organiser has been notified. (Transaction ID recorded, not independently verified.)`
-        );
-
-        const orgRes = await pool.query(
-          `SELECT u.user_id, u.phone_number
-           FROM ikimina_groups g
-           JOIN users u ON u.user_id = g.created_by
-           WHERE g.group_id = $1`,
-          [m.group_id]
-        );
-        if (orgRes.rows[0]) {
-          const org = orgRes.rows[0];
-          await sendSms(
-            org.user_id,
-            org.phone_number,
-            `PesaSmart: A member raised dispute REF#${ref} for Week ${week} (TxID: ${txid}). Please review in your dashboard.`
-          );
-        }
-
-        response = `END ${fill(t.disputeRaised, { ref, week })}`;
+        response = await fileDispute(m, week, type.code, txid);
       }
 
+    // ===== 3. MEMBER CHANGES =====
     } else if (menu === "3") {
       response = `CON PesaSmart - ${t.memberChanges}
 1. ${t.requestExit}
@@ -738,7 +822,7 @@ app.patch("/api/members/:memberId/payout", requireAuth, async (req, res) => {
 app.get("/api/groups/:groupId/disputes", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT d.dispute_id, d.disputed_week, d.momo_txid, d.status, d.raised_at, d.resolved_at,
+      `SELECT d.dispute_id, d.disputed_week, d.momo_txid, d.status, d.raised_at, d.resolved_at, d.dispute_type,
               u.full_name, u.phone_number
        FROM contribution_disputes d
        JOIN ikimina_members m ON m.member_id = d.member_id
@@ -812,7 +896,6 @@ app.get("/api/groups/:groupId/summary", requireAuth, async (req, res) => {
     if (gRes.rows.length === 0) return res.status(404).json({ status: "error", message: "Group not found" });
     const g = gRes.rows[0];
 
-    // Contributions paid / total active
     const contribRes = await pool.query(
       `SELECT COUNT(*) FILTER (WHERE contribution_status = 'paid') AS paid, COUNT(*) AS total
        FROM ikimina_members WHERE group_id = $1 AND status = 'active'`,
@@ -820,14 +903,12 @@ app.get("/api/groups/:groupId/summary", requireAuth, async (req, res) => {
     );
     const { paid, total } = contribRes.rows[0];
 
-    // Open disputes
     const dispRes = await pool.query(
       "SELECT COUNT(*) AS open FROM contribution_disputes WHERE group_id = $1 AND status = 'open'",
       [groupId]
     );
     const openDisputes = dispRes.rows[0].open;
 
-    // Current round from start date
     let round = null;
     if (g.start_date) {
       const start = new Date(g.start_date);
@@ -838,7 +919,6 @@ app.get("/api/groups/:groupId/summary", requireAuth, async (req, res) => {
       if (round > g.cycle_length) round = g.cycle_length;
     }
 
-    // Next payout: earliest active member not yet paid out
     const nextRes = await pool.query(
       `SELECT u.full_name, mm.rotation_order,
               (g.start_date + ((mm.rotation_order - 1) *
@@ -874,7 +954,6 @@ app.get("/api/groups/:groupId/summary", requireAuth, async (req, res) => {
 app.delete("/api/groups/:groupId", requireAuth, async (req, res) => {
   const { groupId } = req.params;
   try {
-    // Delete children first (disputes, changes, members), then the group
     await pool.query("DELETE FROM contribution_disputes WHERE group_id = $1", [groupId]);
     await pool.query("DELETE FROM membership_changes WHERE group_id = $1", [groupId]);
     await pool.query("DELETE FROM ikimina_members WHERE group_id = $1", [groupId]);
@@ -940,7 +1019,6 @@ app.patch("/api/changes/:changeId", requireAuth, async (req, res) => {
       await sendSms(member.user_id, notifyPhone, msg);
     }
 
-    // Group-wide notice for shared-state changes
     if (decision === "approved" && member) {
       if (change.change_type === "exit") {
         await sendGroupSms(change.group_id, `PesaSmart: ${member.full_name} has left the group. The rotation has been updated.`);
