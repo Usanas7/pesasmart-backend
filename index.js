@@ -754,6 +754,23 @@ app.post("/api/groups/:groupId/members", requireAuth, async (req, res) => {
       return res.status(409).json({ status: "error", message: "This phone number is already a member of this group" });
     }
 
+    const capRes = await pool.query(
+      `SELECT g.cycle_length,
+              (SELECT COUNT(*) FROM ikimina_members
+               WHERE group_id = g.group_id AND status = 'active') AS active_count
+       FROM ikimina_groups g WHERE g.group_id = $1`,
+      [groupId]
+    );
+    if (capRes.rows.length > 0) {
+      const { cycle_length, active_count } = capRes.rows[0];
+      if (Number(active_count) >= Number(cycle_length)) {
+        return res.status(409).json({
+          status: "error",
+          message: `This group is full (${cycle_length} members). You cannot add more.`,
+        });
+      }
+    }
+
     const orderResult = await pool.query(
       "SELECT COALESCE(MAX(rotation_order), 0) + 1 AS next FROM ikimina_members WHERE group_id = $1",
       [groupId]
