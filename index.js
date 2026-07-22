@@ -351,6 +351,20 @@ async function sendGroupSms(groupId, message) {
   }
 }
 
+// Append one row to the group's activity log.
+// Never throws: a logging failure must not break the action that triggered it.
+async function logActivity(groupId, eventType, actor, description, affectedMember) {
+  try {
+    await pool.query(
+      `INSERT INTO activity_log (group_id, event_type, actor, affected_member, description)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [groupId, eventType, actor || "system", affectedMember || null, description]
+    );
+  } catch (err) {
+    console.error("activity_log insert failed:", err.message);
+  }
+}
+
 // USSD member menu (bilingual: 1 = English, 2 = Kinyarwanda)
 app.post("/ussd", async (req, res) => {
   const { text, phoneNumber } = req.body;
@@ -414,6 +428,14 @@ ${t.whatIssue}
       [m.group_id, m.member_id, parseInt(week, 10), txid || null, typeCode]
     );
     const ref = String(ins.rows[0].dispute_id).padStart(4, "0");
+
+await logActivity(
+      m.group_id,
+      "dispute_raised",
+      "member",
+      `Dispute REF#${ref} raised for Week ${week}${txid ? ` (TxID ${txid})` : ""}`,
+      m.full_name
+    );
 
     await sendSms(
       m.user_id,
@@ -629,6 +651,8 @@ ${t.enterTxid}`;
           "INSERT INTO membership_changes (group_id, affected_user, change_type) VALUES ($1, $2, 'exit')",
           [m.group_id, m.user_id]
         );
+        await logActivity(m.group_id, "exit_requested", "member",
+          "Member requested to exit the group", m.full_name);
         response = `END ${t.exitSent}`;
       }
 
@@ -647,6 +671,8 @@ ${t.enterTxid}`;
           "INSERT INTO membership_changes (group_id, affected_user, change_type, details) VALUES ($1, $2, 'phone_update', $3)",
           [m.group_id, m.user_id, newPhone]
         );
+        await logActivity(m.group_id, "phone_update_requested", "member",
+          "Member requested a phone-number update", m.full_name);
         response = `END ${t.phoneSent}`;
       }
 
@@ -781,6 +807,8 @@ app.post("/api/groups/:groupId/members", requireAuth, async (req, res) => {
       "INSERT INTO ikimina_members (user_id, group_id, rotation_order) VALUES ($1, $2, $3) RETURNING *",
       [userId, groupId, nextOrder]
     );
+     await logActivity(groupId, "member_added", "organiser",
+      "New member added to the group", fullName || null);
     res.status(201).json({ status: "success", member: result.rows[0] });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
@@ -797,14 +825,20 @@ app.patch("/api/members/:memberId/contribution", requireAuth, async (req, res) =
     );
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Member not found" });
     const member = result.rows[0];
-
+{
+      const nm = await pool.query("SELECT full_name FROM users WHERE user_id = $1", [member.user_id]);
+      await logActivity(member.group_id,
+        status === "paid" ? "contribution_confirmed" : "contribution_unset",
+        "organiser",
+        status === "paid" ? "Contribution marked as paid" : "Contribution mark removed",
+        nm.rows[0] ? nm.rows[0].full_name : null);
+    }
     if (status === "paid") {
       const u = await pool.query("SELECT phone_number FROM users WHERE user_id = $1", [member.user_id]);
       if (u.rows[0]) {
         await sendSms(member.user_id, u.rows[0].phone_number, "PesaSmart: Your contribution for this round has been confirmed as paid.");
       }
     }
-
     res.json({ status: "success", member });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
@@ -822,6 +856,14 @@ app.patch("/api/members/:memberId/payout", requireAuth, async (req, res) => {
     );
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Member not found" });
     const member = result.rows[0];
+    {
+      const nm = await pool.query("SELECT full_name FROM users WHERE user_id = $1", [member.user_id]);
+      await logActivity(member.group_id,
+        received ? "payout_recorded" : "payout_unset",
+        "organiser",
+        received ? "Payout recorded as received" : "Payout record removed",
+        nm.rows[0] ? nm.rows[0].full_name : null);
+    }
 
     if (received) {
       const u = await pool.query("SELECT phone_number FROM users WHERE user_id = $1", [member.user_id]);
@@ -865,6 +907,11 @@ app.patch("/api/disputes/:disputeId", requireAuth, async (req, res) => {
     );
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Dispute not found" });
     const dispute = result.rows[0];
+    if (status === "resolved") {
+      const ref = String(dispute.dispute_id).padStart(4, "0");
+      await logActivity(dispute.group_id, "dispute_resolved", "organiser",
+        `Dispute REF#${ref} marked resolved`, null);
+    }
 
     if (status === "resolved") {
       const u = await pool.query(
@@ -897,6 +944,22 @@ app.get("/api/groups/:groupId/changes", requireAuth, async (req, res) => {
       [req.params.groupId]
     );
     res.json({ status: "success", changes: result.rows });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+app.get("/api/groups/:groupId/activity", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT log_id, event_type, actor, affected_member, description, created_at
+       FROM activity_log
+       WHERE group_id = $1
+       ORDER BY created_at DESC
+       LIMIT 200`,
+      [req.params.groupId]
+    );
+    res.json({ status: "success", activity: result.rows });
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
@@ -1018,6 +1081,11 @@ app.patch("/api/changes/:changeId", requireAuth, async (req, res) => {
       "UPDATE membership_changes SET status = $1 WHERE change_id = $2 RETURNING *",
       [decision, changeId]
     );
+await logActivity(change.group_id,
+      change.change_type === "exit" ? "exit_decided" : "phone_update_decided",
+      "organiser",
+      `${change.change_type === "exit" ? "Exit" : "Phone update"} request ${decision}`,
+      member ? member.full_name : null);
 
     if (member) {
       let msg;
@@ -1112,6 +1180,8 @@ app.post("/api/groups/:groupId/broadcast", requireAuth, async (req, res) => {
         [m.user_id, message]
       );
     }
+await logActivity(groupId, "broadcast_sent", "organiser",
+      `Broadcast sent to ${members.rows.length} member(s)`, null);
 
     res.json({ status: "success", sentTo: recipients.length });
   } catch (err) {
