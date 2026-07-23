@@ -826,12 +826,26 @@ app.patch("/api/members/:memberId/contribution", requireAuth, async (req, res) =
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Member not found" });
     const member = result.rows[0];
 {
-      const nm = await pool.query("SELECT full_name FROM users WHERE user_id = $1", [member.user_id]);
+      const info = await pool.query(
+        `SELECT u.full_name, g.contribution_amount, g.start_date, g.frequency, g.cycle_length
+         FROM users u, ikimina_groups g
+         WHERE u.user_id = $1 AND g.group_id = $2`,
+        [member.user_id, member.group_id]
+      );
+      const row = info.rows[0];
+      let roundNo = "";
+      if (row && row.start_date) {
+        const days = Math.floor((Date.now() - new Date(row.start_date)) / 86400000);
+        const per = row.frequency === "Weekly" ? 7 : 30;
+        roundNo = Math.min(Math.max(Math.floor(days / per) + 1, 1), row.cycle_length);
+      }
       await logActivity(member.group_id,
         status === "paid" ? "contribution_confirmed" : "contribution_unset",
         "organiser",
-        status === "paid" ? "Contribution marked as paid" : "Contribution mark removed",
-        nm.rows[0] ? nm.rows[0].full_name : null);
+        status === "paid"
+          ? `Contribution paid: ${row ? row.contribution_amount : ""} RWF (Round ${roundNo})`
+          : `Contribution mark removed (Round ${roundNo})`,
+        row ? row.full_name : null);
     }
     if (status === "paid") {
       const u = await pool.query("SELECT phone_number FROM users WHERE user_id = $1", [member.user_id]);
@@ -857,12 +871,21 @@ app.patch("/api/members/:memberId/payout", requireAuth, async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ status: "error", message: "Member not found" });
     const member = result.rows[0];
     {
-      const nm = await pool.query("SELECT full_name FROM users WHERE user_id = $1", [member.user_id]);
+      const info = await pool.query(
+        `SELECT u.full_name, g.contribution_amount, g.cycle_length
+         FROM users u, ikimina_groups g
+         WHERE u.user_id = $1 AND g.group_id = $2`,
+        [member.user_id, member.group_id]
+      );
+      const row = info.rows[0];
+      const total = row ? row.contribution_amount * row.cycle_length : "";
       await logActivity(member.group_id,
         received ? "payout_recorded" : "payout_unset",
         "organiser",
-        received ? "Payout recorded as received" : "Payout record removed",
-        nm.rows[0] ? nm.rows[0].full_name : null);
+        received
+          ? `Payout received: ${total} RWF (position ${member.rotation_order})`
+          : "Payout record removed",
+        row ? row.full_name : null);
     }
 
     if (received) {
@@ -951,15 +974,69 @@ app.get("/api/groups/:groupId/changes", requireAuth, async (req, res) => {
 
 app.get("/api/groups/:groupId/activity", requireAuth, async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT log_id, event_type, actor, affected_member, description, created_at
-       FROM activity_log
-       WHERE group_id = $1
-       ORDER BY created_at DESC
-       LIMIT 200`,
+    const g = await pool.query(
+      "SELECT start_date FROM ikimina_groups WHERE group_id = $1",
       [req.params.groupId]
     );
-    res.json({ status: "success", activity: result.rows });
+    const grp = g.rows[0];
+    const result = await pool.query(
+      `SELECT log_id, event_type, actor, affected_member, description, created_at
+       FROM activity_log WHERE group_id = $1 ORDER BY created_at ASC`,
+      [req.params.groupId]
+    );
+
+    const start = grp && grp.start_date ? new Date(grp.start_date) : null;
+    const withWeek = result.rows.map((r) => {
+      let week = null;
+      if (start) {
+        const days = Math.floor((new Date(r.created_at) - start) / 86400000);
+        week = Math.max(Math.floor(days / 7) + 1, 1);
+      }
+      return { ...r, week };
+    });
+
+    const byWeek = {};
+    for (const r of withWeek) {
+      const key = r.week == null ? "unscheduled" : r.week;
+      (byWeek[key] = byWeek[key] || []).push(r);
+    }
+    const weeks = Object.keys(byWeek)
+      .sort((a, b) => Number(b) - Number(a))
+      .map((w) => ({ week: w, events: byWeek[w].reverse() }));
+
+    res.json({ status: "success", weeks });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: err.message });
+  }
+});
+
+app.get("/api/groups/:groupId/activity.csv", requireAuth, async (req, res) => {
+  try {
+    const g = await pool.query(
+      "SELECT name, start_date FROM ikimina_groups WHERE group_id = $1",
+      [req.params.groupId]
+    );
+    const grp = g.rows[0] || {};
+    const start = grp.start_date ? new Date(grp.start_date) : null;
+    const result = await pool.query(
+      `SELECT created_at, event_type, actor, affected_member, description
+       FROM activity_log WHERE group_id = $1 ORDER BY created_at ASC`,
+      [req.params.groupId]
+    );
+    const esc = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    const header = "Week,Date,Event,By,Member,Details\n";
+    const body = result.rows.map((r) => {
+      let week = "";
+      if (start) {
+        const days = Math.floor((new Date(r.created_at) - start) / 86400000);
+        week = Math.max(Math.floor(days / 7) + 1, 1);
+      }
+      return [week, new Date(r.created_at).toLocaleString(), r.event_type, r.actor, r.affected_member, r.description]
+        .map(esc).join(",");
+    }).join("\n");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="${(grp.name || "group")}_history.csv"`);
+    res.send(header + body);
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
